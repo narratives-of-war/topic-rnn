@@ -1,0 +1,23 @@
+# SQuAD utils
+allennlp==0.3.0
+
+# Numerical computing
+numpy
+
+# Training curve visualization
+tensorboard==1.0.0a6
+
+# Progress bar for training
+tqdm
+
+# Serving web demo
+flask
+
+# Unit tests
+pytest
+
+# Lets pytest find our code
+pytest-pythonpath
+
+# Style linting
+flake8
