@@ -1,4 +1,4 @@
-# SQuAD utils
+# AllenNLP
 allennlp==0.3.0
 
 # Numerical computing
