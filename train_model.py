@@ -8,6 +8,7 @@ import torch
 from torch import optim
 
 sys.path.append(os.path.join(os.path.dirname(__file__)))
+from topic_rnn_rc.models.topic_rnn import TopicRNN
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,10 @@ TODO:
         - Perplexity?
 """
 
+MODEL_TYPES = {
+    "topic": TopicRNN
+}
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -37,14 +42,10 @@ def main():
                         default=os.path.join(
                             project_root, "conflicts", "validation"),
                         help="Path to the conflicts dev data.")
-    parser.add_argument("--squad-conflicts-path", type=str,
+    parser.add_argument("--conflict-test-path", type=str,
                         default=os.path.join(
                             project_root, "conflicts", "test"),
                         help="Path to the conflicts test data.")
-    parser.add_argument("--glove-path", type=str,
-                        default=os.path.join(project_root, "glove",
-                                             "glove.6B.50d.txt"),
-                        help="Path to word vectors in GloVe format.")
     parser.add_argument("--load-path", type=str,
                         help=("Path to load a saved model from and "
                               "evaluate on test data. May not be "
@@ -54,7 +55,7 @@ def main():
                               "Required if not using --load-path. "
                               "May not be used with --load-path."))
     parser.add_argument("--model-type", type=str, default="topic-rnn",
-                        choices=["topic-rnn"],
+                        choices=["topic"],
                         help="Model type to train.")
     parser.add_argument("--min-token-count", type=int, default=10,
                         help=("Number of times a token must be observed "
@@ -93,6 +94,14 @@ def main():
                            "CUDA (use --cuda to turn on.)\033[0m")
         else:
             torch.cuda.manual_seed(args.seed)
+
+
+    # Create model of the correct type.
+    if args.model_type == "topic":
+        logger.info("Building TopicRNN model")
+        model = TopicRNN(embedding_matrix, args.hidden_size, args.dropout)
+
+    logger.info(model)
 
 
 def train_epoch(model):
