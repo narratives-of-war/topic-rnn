@@ -1,6 +1,9 @@
 # AllenNLP
 allennlp==0.3.0
 
+# NLTK
+nltk
+
 # Numerical computing
 numpy
 
