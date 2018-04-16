@@ -103,13 +103,12 @@ def main():
     if not args.conflicts_train_path:
         raise ValueError("Training data directory required")
 
-    # TODO: Make a vocabulary that restricts the vocab size.
-    training_files = os.listdir(args.conflicts_train_path)
 
     print("Building corpus from Conflict Wikipedia JSON files:")
     print("Restricting vocabulary based on min token count",
           args.min_token_count)
 
+    training_files = os.listdir(args.conflicts_train_path)
     tokens = []
     for file in tqdm(training_files):
         file_path = os.path.join(args.conflicts_train_path, file)
