@@ -1,4 +1,5 @@
 import argparse
+from collections import Counter
 import logging
 import os
 import shutil
@@ -11,7 +12,7 @@ from torch import optim
 from torch.nn.functional import cross_entropy
 
 sys.path.append(os.path.join(os.path.dirname(__file__)))
-from Dictionary import Corpus, word_vector_from_seq
+from Dictionary import Corpus, word_vector_from_seq, extract_tokens_from_conflict_json
 from topic_rnn_rc.models.rnn import RNN
 
 logger = logging.getLogger(__name__)
@@ -99,9 +100,6 @@ def main():
         else:
             torch.cuda.manual_seed(args.seed)
 
-    # Construct vocabulary
-    corpus = Corpus()
-
     if not args.conflicts_train_path:
         raise ValueError("Training data directory required")
 
@@ -109,12 +107,32 @@ def main():
     training_files = os.listdir(args.conflicts_train_path)
 
     print("Building corpus from Conflict Wikipedia JSON files:")
+    print("Restricting vocabulary based on min token count",
+          args.min_token_count)
+
+    tokens = []
+    for file in tqdm(training_files):
+        file_path = os.path.join(args.conflicts_train_path, file)
+        tokens += extract_tokens_from_conflict_json(file_path)
+
+    # Map words to the number of times they occur in the corpus.
+    word_frequencies = dict(Counter(tokens))
+
+    # Sieve the dictionary by excluding all words that appear fewer
+    # than min_token_count times.
+    vocabulary = set([w for w, f in word_frequencies.items()
+                      if f >= args.min_token_count])
+
+    # Construct the corpus with the given vocabulary.
+    corpus = Corpus(vocabulary)
+
+    print("Constructed corpus from JSON files:")
     for file in tqdm(training_files):
         # Corpus expects a full file path.
         corpus.add_document(os.path.join(args.conflicts_train_path, file))
 
     vocab_size = len(corpus.dictionary)
-    print("VOCAB SIZE:", vocab_size)
+    print("Final Vocabulary Size:", vocab_size)
 
     # Create model of the correct type.
     print("Elman RNN model --------------")

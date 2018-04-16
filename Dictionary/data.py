@@ -7,11 +7,12 @@ import os
 
 import torch
 
+UNKNOWN = "<UNKNOWN>"
 
 class Dictionary(object):
     def __init__(self):
-        self.word_to_index = {}
-        self.index_to_word = []
+        self.word_to_index = { UNKNOWN: 0 }
+        self.index_to_word = [ UNKNOWN ]
 
     def add_word(self, word):
         if word not in self.word_to_index:
@@ -32,9 +33,13 @@ class Corpus(object):
     tensor for the document passed.
     """
 
-    def __init__(self):
+    def __init__(self, vocabulary):
         self.dictionary = Dictionary()
         self.documents = []
+        self.vocabulary = vocabulary
+
+        for word in vocabulary:
+            self.dictionary.add_word(word)
 
     def add_document(self, path):
         """
@@ -79,13 +84,12 @@ class Corpus(object):
         if len(words) == 0:
             return None
 
-        # Add the words to the dictionary.
-        for word in words:
-            self.dictionary.add_word(word)
-
         # Construct a sequence tensor for the text.
         ids = torch.LongTensor(len(words))
         for i, word in enumerate(words):
-            ids[i] = self.dictionary.word_to_index[word]
+            if word in self.dictionary.word_to_index:
+                ids[i] = self.dictionary.word_to_index[word]
+            else:
+                ids[i] = self.dictionary.word_to_index[UNKNOWN]
 
         return ids
