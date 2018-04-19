@@ -115,7 +115,7 @@ class TopicRNN(nn.Module):
         weight = next(self.parameters()).data
         return Variable(weight.new(self.layers, self.batch_size, self.hidden_size).zero_())
 
-    def forward(self, input, hidden):
+    def forward(self, input, hidden, stop_indicators):
         # Embed the passage.
         # Shape: (batch, length (single word), embedding_size)
         embedded_passage = self.embedding(input).view(self.batch_size, 1, -1)
@@ -126,10 +126,11 @@ class TopicRNN(nn.Module):
         output, hidden = self.rnn(embedded_passage, hidden)
 
         # Extract word proportions (stop words included).
-        # TODO: Throttle inclusion of topics based on stop words.
         proportions_included_stops = torch.matmul(self.v.T, hidden)
+        proportions_no_stops = torch.matmul((1 - stop_indicators),
+                                            torch.matmul(self.beta.T, self.theta))
 
-        return softmax(proportions_included_stops), hidden
+        return softmax(proportions_included_stops + proportions_no_stops), hidden
 
 
 class G(nn.Module):
