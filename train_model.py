@@ -60,14 +60,14 @@ def main():
                              "dev data.")
     parser.add_argument("--built-corpus-path", type=str,
                         default=os.path.join(
-                            project_root, "data", "corpus.pkl"),
+                            project_root, "corpus.pkl"),
                         help="Path to a pre-constructed corpus.")
     parser.add_argument("--save-dir", type=str,
                         help=("Path to save model checkpoints and logs. "
                               "Required if not using --load-path. "
                               "May not be used with --load-path."))
     parser.add_argument("--model-type", type=str, default="vanilla",
-                        choices=["vanilla", "topic"],
+                        choices=["vanilla", "topic", "lstm"],
                         help="Model type to train.")
     parser.add_argument("--min-token-count", type=int, default=10,
                         help=("Number of times a token must be observed "
@@ -121,9 +121,10 @@ def main():
     if not os.path.exists(args.built_corpus_path):
         # Pickle the corpus for easy access
         corpus = init_corpus(args.conflicts_train_path, args.min_token_count)
-        pickle.dump(corpus, args.built_corpus_path)
+        pickled_corpus = open(args.built_corpus_path, 'wb')
+        pickle.dump(corpus, pickled_corpus)
     else:
-        corpus = pickle.load(args.built_corpus_path, 'rb')
+        corpus = pickle.load(open(args.built_corpus_path, 'rb'))
 
     vocab_size = len(corpus.dictionary)
     print("Vocabulary Size:", vocab_size)
@@ -231,7 +232,11 @@ def train_epoch(model, corpus, batch_size, bptt_limit, optimizer, cuda):
                                             loss.data[0] / bptt_limit)
 
                     loss = 0
-                    hidden = Variable(hidden.data)
+                    if type(hidden) == tuple:
+                        hidden = tuple(Variable(hidden[i].data)
+                                       for i in range(len(hidden)))
+                    else:
+                        hidden = Variable(hidden.data)
 
 
 def evaluate_perplexity(model, corpus, batch_size, bptt_limit, cuda):
@@ -285,8 +290,9 @@ def evaluate_perplexity(model, corpus, batch_size, bptt_limit, cuda):
                                             "Normalized Perplexity thus far:",
                                             2 ** (-(log_prob_sum / M)))
 
-                    if type(hidden) is tuple:
-                        hidden = (Variable(hidden[0].data), Variable(hidden[1].data))
+                    if type(hidden) == tuple:
+                        hidden = tuple(Variable(hidden[i].data)
+                                       for i in range(len(hidden)))
                     else:
                         hidden = Variable(hidden.data)
 
