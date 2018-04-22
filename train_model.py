@@ -3,7 +3,6 @@ from collections import Counter
 import logging
 import os
 import pickle
-import shutil
 from tqdm import tqdm
 import sys
 
@@ -12,7 +11,8 @@ from torch.autograd import Variable
 from torch.nn.functional import cross_entropy, log_softmax
 
 sys.path.append(os.path.join(os.path.dirname(__file__)))
-from Dictionary import Corpus, word_vector_from_seq, extract_tokens_from_conflict_json
+from Dictionary import Corpus, word_vector_from_seq,\
+    extract_tokens_from_conflict_json
 from topic_rnn_rc.models.topic_rnn import TopicRNN
 from topic_rnn_rc.models.rnn import RNN
 from topic_rnn_rc.models.lstm import LSTM
@@ -80,7 +80,7 @@ def main():
     parser.add_argument("--hidden-size", type=int, default=256,
                         help="Hidden size to use in RNN and TopicRNN models.")
     parser.add_argument("--embedding-size", type=int, default=50,
-                        help="Embedding size to use in RNN and TopicRNN models.")
+                        help="Embedding size to enocde words for the RNNs.")
     parser.add_argument("--num-epochs", type=int, default=25,
                         help="Number of epochs to train for.")
     parser.add_argument("--dropout", type=float, default=0.2,
@@ -154,6 +154,8 @@ def main():
     # Calculate perplexity.
     perplexity = evaluate_perplexity(model, corpus, args.batch_size,
                                      args.bptt_limit, args.cuda)
+
+    print("Final perplexity: {.5f}".format(perplexity))
 
 
 def init_corpus(training_path, min_token_count):

@@ -54,10 +54,10 @@ class LSTM(nn.Module):
         where all values are zero.
         :return: A tuple of torch Tensors; cell and hidden states.
         """
-
         weight = next(self.parameters()).data
-        return (Variable(weight.new(self.layers, self.batch_size, self.hidden_size).zero_()),
-                Variable(weight.new(self.layers, self.batch_size, self.hidden_size).zero_()))
+        ct = weight.new(self.layers, self.batch_size, self.hidden_size).zero_()
+        ht = weight.new(self.layers, self.batch_size, self.hidden_size).zero_()
+        return Variable(ct), Variable(ht)
 
     def forward(self, input, hidden):
 
