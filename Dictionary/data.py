@@ -34,13 +34,20 @@ class Corpus(object):
     tensor for the document passed.
     """
 
-    def __init__(self, vocabulary):
+    def __init__(self, vocabulary, stops):
         self.dictionary = Dictionary()
         self.documents = []
         self.vocabulary = vocabulary
+        self.stop_encodings = set()
 
         for word in vocabulary:
             self.dictionary.add_word(word)
+
+        # Populate the set containing stopword encodings.
+        # What the actual words are doesn't matter as long as we can
+        # lookup whether a part of a seq tensor is a stop or not!
+        for word in stops:
+            self.stop_encodings.add(self.dictionary.word_to_index[word])
 
     def add_document(self, path):
         """

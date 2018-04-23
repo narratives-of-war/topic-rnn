@@ -62,6 +62,10 @@ def main():
                         default=os.path.join(
                             project_root, "corpus.pkl"),
                         help="Path to a pre-constructed corpus.")
+    parser.add_argument("--stopwords-path", type=str,
+                        default=os.path.join(
+                            project_root, "en.txt"),
+                        help="Path to the list of stop words.")
     parser.add_argument("--save-dir", type=str,
                         help=("Path to save model checkpoints and logs. "
                               "Required if not using --load-path. "
@@ -118,9 +122,14 @@ def main():
     print("Restricting vocabulary based on min token count",
           args.min_token_count)
 
+    print("Collecting stopwords:")
+    stopwords_file = open(args.stopwords_path, 'r')
+    stops = set([s.strip() for s in stopwords_file.readlines()])
+
     if not os.path.exists(args.built_corpus_path):
         # Pickle the corpus for easy access
-        corpus = init_corpus(args.conflicts_train_path, args.min_token_count)
+        corpus = init_corpus(args.conflicts_train_path,
+                             args.min_token_count, stops)
         pickled_corpus = open(args.built_corpus_path, 'wb')
         pickle.dump(corpus, pickled_corpus)
     else:
@@ -158,7 +167,7 @@ def main():
     print("Final perplexity: {.5f}".format(perplexity))
 
 
-def init_corpus(training_path, min_token_count):
+def init_corpus(training_path, min_token_count, stops):
     training_files = os.listdir(training_path)
     tokens = []
     for file in tqdm(training_files):
@@ -174,7 +183,7 @@ def init_corpus(training_path, min_token_count):
                       if f >= min_token_count])
 
     # Construct the corpus with the given vocabulary.
-    corpus = Corpus(vocabulary)
+    corpus = Corpus(vocabulary, stops)
 
     print("Constructed corpus from JSON files:")
     for file in tqdm(training_files):
