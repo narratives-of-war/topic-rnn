@@ -238,7 +238,9 @@ def train_topic_rnn(model, corpus, bptt_limit, optimizer, cuda):
                 # This uses an encoding from words to integers in a
                 # space that excludes stop words.
                 portion_frequencies = corpus.compute_term_frequencies(portion)
-                loss = model.likelihood(portion, portion_frequencies)
+                stop_indicators = corpus.get_stop_indicators(portion)
+                loss = model.likelihood(portion, portion_frequencies,
+                                        stop_indicators)
 
                 # Perform backpropagation and update parameters.
                 optimizer.zero_grad()

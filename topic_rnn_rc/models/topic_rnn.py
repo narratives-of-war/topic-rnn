@@ -118,7 +118,7 @@ class TopicRNN(nn.Module):
         weight = next(self.parameters()).data
         return Variable(weight.new(self.layers, self.batch_size, self.hidden_size).zero_())
 
-    def forward(self, input, hidden, stop_indicators):
+    def forward(self, input, hidden, stop_word):
         # Embed the passage.
         # Shape: (batch, length (single word), embedding_size)
         embedded_passage = self.embedding(input).view(self.batch_size, 1, -1)
@@ -130,13 +130,15 @@ class TopicRNN(nn.Module):
 
         # Extract word proportions (with and without stop words).
         with_stops = torch.mul(self.v.T, hidden)
-        no_stops = torch.mul((1 - stop_indicators),
-                                torch.mul(self.beta.T, self.theta))
 
-        return softmax(with_stops + no_stops), hidden
+        if stop_word:
+            return softmax(with_stops), hidden
+        else:
+            no_stops = torch.mul(self.beta.T, self.theta)
+            return softmax(with_stops + no_stops), hidden
 
-    def likelihood(self, sequence_tensor, term_frequencies, cuda,
-                   num_samples=1):
+    def likelihood(self, sequence_tensor, term_frequencies,
+                   cuda, stop_indicators, num_samples=1):
 
         # Compute term frequency
 
@@ -170,7 +172,8 @@ class TopicRNN(nn.Module):
                     word = word.cuda()
 
                 self.theta = mu + torch.exp(log_sigma) * epsilon
-                output, hidden = self.forward(Variable(word), hidden)
+                output, hidden = self.forward(Variable(word), hidden,
+                                              stop_indicators[k])
 
                 prediction_probabilities = log_softmax(output.view(-1, 1), 0)
                 word_probability = prediction_probabilities[word[0]]

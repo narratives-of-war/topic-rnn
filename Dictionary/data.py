@@ -110,6 +110,20 @@ class Corpus(object):
 
         return frequencies
 
+    def get_stop_indicators(self, seq_tensor):
+        """
+        Computes a boolean vector where 1 means the word in 'seq_tensor'
+        in that place is a stopword and 0 means otherwise.
+        """
+        seq_length = seq_tensor.size(0)
+        stop_indicators = torch.zeros(seq_length).long()
+        for i, word in enumerate(seq_tensor):  # Precaution: Only long
+            word_as_str = self.dictionary.index_to_word[word]
+            if word_as_str in self.dictionary_no_stops.word_to_index:
+                stop_indicators[i] = 1
+
+        return stop_indicators
+
     def tokenize_from_text(self, text):
         words = word_tokenize(text)
 
