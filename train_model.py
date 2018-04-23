@@ -193,7 +193,7 @@ def init_corpus(training_path, min_token_count, stops):
     return corpus
 
 
-def train_topic_rnn(model, corpus, batch_size, bptt_limit, optimizer, cuda):
+def train_topic_rnn(model, corpus, bptt_limit, optimizer, cuda):
     """
     This model trains differently than baselines; it computes the likelihood
     of a portion of text under the model instead of doing cross entropy against
@@ -233,7 +233,7 @@ def train_topic_rnn(model, corpus, batch_size, bptt_limit, optimizer, cuda):
             hidden = model.init_hidden()
 
             # Batchify the sequence tensor according to backpropagation limit.
-            batched_section, num_batches = batchify_section(section)
+            batched_section, batches = batchify_section(section)
             for k, portion in enumerate(batched_section):
                 # This uses an encoding from words to integers in a
                 # space that excludes stop words.
@@ -249,7 +249,7 @@ def train_topic_rnn(model, corpus, batch_size, bptt_limit, optimizer, cuda):
                 print_progress_in_place("Document:", document_name,
                                         "Section:", j,
                                         "Portion:", k,
-                                        "of", num_batches,
+                                        "of", batches,
                                         "Normalized BPTT Loss:",
                                         loss.data[0] / bptt_limit)
 
