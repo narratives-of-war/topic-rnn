@@ -136,20 +136,22 @@ class TopicRNN(nn.Module):
         return softmax(with_stops + no_stops), hidden
 
     def likelihood(self, sequence_tensor, term_frequencies, cuda):
+
+        # Kullback-Leibler Divergence
+        mapped_term_frequencies = self.g(term_frequencies)
+
+        # Compute Gaussian parameters
+        mu = self.w1.matmul(mapped_term_frequencies) + self.a1
+        log_sigma = self.w2.matmul(mapped_term_frequencies) + self.a2
+
         # A closed-form solution exists since we're assuming q
         # is drawn from a normal distribution.
-
-        # Compute Kullback-Leibler Divergence
-        g_Xc = self.g(term_frequencies)
-        mu = self.w1.matmul(g_Xc) + self.a1
-        log_sigma = self.w2.matmul(g_Xc) + self.a2
-        KLD = 1 + 2 * log_sigma - (mu ** 2) - torch.exp(2 * log_sigma)
-        KLD = torch.sum(KLD, 0) / 2
+        kl_div = 1 + 2 * log_sigma - (mu ** 2) - torch.exp(2 * log_sigma)
+        kl_div = torch.sum(kl_div, 0) / 2
 
         # Sample gaussian noise between steps and sample the words
         def normal_noise():
-            # TODO: Implement N(0, I) to produce K-dimensional noise.
-            return 0
+            return torch.rand(1)[0]
 
         log_probabilities = 0
         L = 0
@@ -173,7 +175,7 @@ class TopicRNN(nn.Module):
             L += 1
 
         # Likelihood of the sequence under the model
-        return -KLD + (log_probabilities / L)
+        return -kl_div + (log_probabilities / L)
 
 
 class G(nn.Module):
