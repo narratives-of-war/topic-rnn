@@ -230,7 +230,6 @@ def train_topic_rnn(model, corpus, bptt_limit, optimizer, cuda):
         # the current word and the next, from first to penultimate.
         document_name = document["title"]
         for j, section in enumerate(document["sections"]):
-            hidden = model.init_hidden()
 
             # Batchify the sequence tensor according to backpropagation limit.
             batched_section, batches = batchify_section(section)
@@ -254,14 +253,6 @@ def train_topic_rnn(model, corpus, bptt_limit, optimizer, cuda):
                                         "of", batches,
                                         "Normalized BPTT Loss:",
                                         loss.data[0] / bptt_limit)
-
-                # Detaches hidden state history to prevent bp all the way
-                # back to the start of the section.
-                if type(hidden) == tuple:
-                    hidden = tuple(Variable(hidden[i].data)
-                                   for i in range(len(hidden)))
-                else:
-                    hidden = Variable(hidden.data)
 
 
 def train_epoch(model, corpus, batch_size, bptt_limit, optimizer, cuda):
