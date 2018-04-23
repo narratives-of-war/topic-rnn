@@ -49,6 +49,16 @@ class Corpus(object):
         for word in stops:
             self.stop_encodings.add(self.dictionary.word_to_index[word])
 
+        # For the neural network that encodes word frequencies.
+        vocabulary_no_stops = vocabulary - stops
+        self.dictionary_no_stops = Dictionary()
+        self.vocabulary_no_stops = vocabulary_no_stops
+        self.vocab_size_no_stops = len(vocabulary_no_stops)
+
+        # STOPLESS PARK! STOPLESS PARK!
+        for word in self.vocabulary_no_stops:
+            self.dictionary_no_stops.add_word(word)
+
     def add_document(self, path):
         """
         Tokenizes a Conflict JSON Wikipedia article and adds it's sequence
@@ -84,6 +94,21 @@ class Corpus(object):
             "sections": section_tensors
         }
         self.documents.append(document_object)
+
+    def compute_term_frequencies(self, seq_tensor):
+        """
+        Computes the term-frequency vector of 'seq_tensor' in the
+        stop-less space.
+        :param seq_tensor: A LongTensor containing word vectors.
+        :return: A new vector in stopless space containing the counts of
+                the words normalized by the size of the seq_tensor.
+        """
+        frequencies = torch.FloatTensor(self.vocab_size_no_stops)
+        normalizer = torch.sum(seq_tensor)
+        for word in seq_tensor.long():  # Precaution: Only long
+            frequencies[word] += 1 / normalizer
+
+        return frequencies
 
     def tokenize_from_text(self, text):
         words = word_tokenize(text)

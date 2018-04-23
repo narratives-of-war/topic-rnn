@@ -129,53 +129,57 @@ class TopicRNN(nn.Module):
         output, hidden = self.rnn(embedded_passage, hidden)
 
         # Extract word proportions (with and without stop words).
-        with_stops = torch.matmul(self.v.T, hidden)
-        no_stops = torch.matmul((1 - stop_indicators),
-                                torch.matmul(self.beta.T, self.theta))
+        with_stops = torch.mul(self.v.T, hidden)
+        no_stops = torch.mul((1 - stop_indicators),
+                                torch.mul(self.beta.T, self.theta))
 
         return softmax(with_stops + no_stops), hidden
 
-    def likelihood(self, sequence_tensor, term_frequencies, cuda):
+    def likelihood(self, sequence_tensor, term_frequencies, cuda,
+                   num_samples=1):
 
-        # Kullback-Leibler Divergence
+        # Compute term frequency
+
+        # 1. Compute Kullback-Leibler Divergence
         mapped_term_frequencies = self.g(term_frequencies)
 
         # Compute Gaussian parameters
-        mu = self.w1.matmul(mapped_term_frequencies) + self.a1
-        log_sigma = self.w2.matmul(mapped_term_frequencies) + self.a2
+        mu = self.w1.mul(mapped_term_frequencies) + self.a1
+        log_sigma = self.w2.mul(mapped_term_frequencies) + self.a2
 
         # A closed-form solution exists since we're assuming q
         # is drawn from a normal distribution.
         kl_div = 1 + 2 * log_sigma - (mu ** 2) - torch.exp(2 * log_sigma)
         kl_div = torch.sum(kl_div, 0) / 2
 
-        # Sample gaussian noise between steps and sample the words
+        # 2. Sample all words in the sequence
+
         def normal_noise():
+            # Sample gaussian noise between steps and sample the words
             return torch.rand(1)[0]
 
         log_probabilities = 0
-        L = 0
-        hidden = self.init_hidden()
-        for k in range(sequence_tensor.size(0) - 1):
-            word = torch.LongTensor(1)
-            word[0] = sequence_tensor[k]
-            epsilon = normal_noise()
+        for l in range(num_samples):
+            hidden = self.init_hidden()
+            for k in range(sequence_tensor.size(0) - 1):
+                word = torch.LongTensor(1)
+                word[0] = sequence_tensor[k]
+                epsilon = normal_noise()
 
-            if cuda:
-                word = word.cuda()
+                if cuda:
+                    word = word.cuda()
 
-            self.theta = mu + torch.exp(log_sigma) * epsilon
-            output, hidden = self.forward(Variable(word), hidden)
+                self.theta = mu + torch.exp(log_sigma) * epsilon
+                output, hidden = self.forward(Variable(word), hidden)
 
-            prediction_probabilities = log_softmax(output.view(-1, 1), 0)
-            word_probability = prediction_probabilities[word[0]]
+                prediction_probabilities = log_softmax(output.view(-1, 1), 0)
+                word_probability = prediction_probabilities[word[0]]
 
-            # Update the Monte Carlo sample we have
-            log_probabilities += word_probability.data[0]
-            L += 1
+                # Update the Monte Carlo sample we have
+                log_probabilities += word_probability.data[0]
 
         # Likelihood of the sequence under the model
-        return -kl_div + (log_probabilities / L)
+        return -kl_div + (log_probabilities / num_samples)
 
 
 class G(nn.Module):

@@ -193,6 +193,78 @@ def init_corpus(training_path, min_token_count, stops):
     return corpus
 
 
+def train_topic_rnn(model, corpus, batch_size, bptt_limit, optimizer, cuda):
+    """
+    This model trains differently than baselines; it computes the likelihood
+    of a portion of text under the model instead of doing cross entropy against
+    the next word.
+
+    We maintain processing one word at a time to allow previous sections to have
+    direct influence on later ones (i.e. indifferent batching will cause issues).
+    """
+
+    def batchify_section(seq_tensor):
+        # Partition the current sequence tensor into batches the same
+        # length as our backpropagation-through-time limit.
+        num_batches = seq_tensor.size(0) // bptt_limit
+
+        # Discard portions that don't fit evenly.
+        seq_tensor = seq_tensor.narrow(0, 0, num_batches * bptt_limit)
+
+        # (num_batches x length)
+        seq_tensor = seq_tensor.view(num_batches, -1).t().contiguous()
+
+        if cuda:
+            seq_tensor = seq_tensor.cuda()
+
+        return seq_tensor, num_batches
+
+    # Set model to training mode (activates dropout and other things).
+    model.train()
+    print("Training in progress:")
+    for i, document in enumerate(corpus.documents):
+        # Incorporation of time requires feeding in by one word at
+        # a time.
+        #
+        # Iterate through the words of the document, calculating loss between
+        # the current word and the next, from first to penultimate.
+        document_name = document["title"]
+        for j, section in enumerate(document["sections"]):
+            hidden = model.init_hidden()
+
+            # Batchify the sequence tensor according to backpropagation limit.
+            batched_section, num_batches = batchify_section(section)
+
+            # TODO: Compute frequencies and then likelihood.
+            # This requires an encoding from words to integers in a
+            # space that excludes stop words...
+            for k, portion in enumerate(batched_section):
+
+                portion_frequencies = corpus.compute_term_frequencies(portion)
+                loss = model.likelihood(portion, portion_frequencies)
+
+                # Perform backpropagation and update parameters.
+                optimizer.zero_grad()
+                loss.backward(retain_graph=True)
+                optimizer.step()
+
+                # Print progress
+                print_progress_in_place("Document:", document_name,
+                                        "Section:", j,
+                                        "Portion:", k,
+                                        "of", num_batches,
+                                        "Normalized BPTT Loss:",
+                                        loss.data[0] / bptt_limit)
+
+                # Detaches hidden state history to prevent bp all the way
+                # back to the start of the section.
+                if type(hidden) == tuple:
+                    hidden = tuple(Variable(hidden[i].data)
+                                   for i in range(len(hidden)))
+                else:
+                    hidden = Variable(hidden.data)
+
+
 def train_epoch(model, corpus, batch_size, bptt_limit, optimizer, cuda):
     """
     Train the model for one epoch.
