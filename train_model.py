@@ -234,12 +234,9 @@ def train_topic_rnn(model, corpus, batch_size, bptt_limit, optimizer, cuda):
 
             # Batchify the sequence tensor according to backpropagation limit.
             batched_section, num_batches = batchify_section(section)
-
-            # TODO: Compute frequencies and then likelihood.
-            # This requires an encoding from words to integers in a
-            # space that excludes stop words...
             for k, portion in enumerate(batched_section):
-
+                # This uses an encoding from words to integers in a
+                # space that excludes stop words.
                 portion_frequencies = corpus.compute_term_frequencies(portion)
                 loss = model.likelihood(portion, portion_frequencies)
 
