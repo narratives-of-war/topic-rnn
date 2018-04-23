@@ -116,7 +116,8 @@ class TopicRNN(nn.Module):
         """
 
         weight = next(self.parameters()).data
-        return Variable(weight.new(self.layers, self.batch_size, self.hidden_size).zero_())
+        return Variable(weight.new(self.layers, self.batch_size,
+                                   self.hidden_size).zero_())
 
     def forward(self, input, hidden, stop_word):
         # Embed the passage.

@@ -199,8 +199,9 @@ def train_topic_rnn(model, corpus, bptt_limit, optimizer, cuda):
     of a portion of text under the model instead of doing cross entropy against
     the next word.
 
-    We maintain processing one word at a time to allow previous sections to have
-    direct influence on later ones (i.e. indifferent batching will cause issues).
+    We maintain processing one word at a time to allow previous sections to
+    have direct influence on later ones (i.e. indifferent batching will
+    cause issues).
     """
 
     def batchify_section(seq_tensor):
@@ -285,7 +286,7 @@ def train_epoch(model, corpus, batch_size, bptt_limit, optimizer, cuda):
 
                 output, hidden = model(Variable(current_word), hidden)
 
-                # Calculate loss between the next word and what was anticipated.
+                # Calculate loss between prediction and what was anticipated.
                 loss += cross_entropy(output.view(1, -1), Variable(next_word))
 
                 # Perform backpropagation and update parameters.

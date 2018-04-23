@@ -3,7 +3,6 @@
 
 import json
 from nltk import word_tokenize
-import os
 
 import torch
 
