@@ -76,7 +76,7 @@ class TopicRNN(nn.Module):
         # Topic proportions randomly initialized (uniform dist).
         topic_proportions = torch.rand(topic_dim)
         topic_proportions /= torch.sum(topic_proportions)
-        self.theta = nn.Parameter(topic_proportions)
+        self.theta = topic_proportions
 
         # Topic distributions over words
         self.beta = nn.Parameter(torch.rand(topic_dim, vocab_size))
@@ -85,15 +85,12 @@ class TopicRNN(nn.Module):
         self.g = G(vocab_size - stop_size, vae_hidden_size, topic_dim)
 
         # mu
-        self.w1 = nn.Parameter(torch.rand(vocab_size, vae_hidden_size))
-        self.a1 = nn.Parameter(torch.rand(vocab_size))
+        self.w1 = nn.Parameter(torch.rand(vae_hidden_size))
+        self.a1 = nn.Parameter(torch.rand(topic_dim))
 
         # sigma
         self.w2 = nn.Parameter(torch.rand(vae_hidden_size))
-        self.a2 = nn.Parameter(torch.rand(vocab_size))
-
-        # Weight matrix to extract word proportions from hidden states.
-        self.v = torch.rand(vocab_size, hidden_size)
+        self.a2 = nn.Parameter(torch.rand(topic_dim))
 
         """ Generic RNN Parameters """
 
@@ -130,25 +127,28 @@ class TopicRNN(nn.Module):
         output, hidden = self.rnn(embedded_passage, hidden)
 
         # Extract word proportions (with and without stop words).
-        with_stops = torch.mul(self.v.T, hidden)
+        # Squeeze needed since output is 1 x 1 x vocab_size
+        with_stops = self.decoder(hidden).squeeze()
 
         if stop_word:
-            return softmax(with_stops), hidden
+            return softmax(with_stops, dim=0), hidden
         else:
-            no_stops = torch.mul(self.beta.T, self.theta)
-            return softmax(with_stops + no_stops), hidden
+            no_stops = torch.mm(self.theta.unsqueeze(0), self.beta)
+            return softmax(with_stops + no_stops, dim=0), hidden
 
     def likelihood(self, sequence_tensor, term_frequencies,
-                   cuda, stop_indicators, num_samples=1):
+                   stop_indicators, cuda, num_samples=1):
 
         # Compute term frequency
 
         # 1. Compute Kullback-Leibler Divergence
-        mapped_term_frequencies = self.g(term_frequencies)
+        mapped_term_frequencies = self.g(Variable(term_frequencies))
 
         # Compute Gaussian parameters
-        mu = self.w1.mul(mapped_term_frequencies) + self.a1
-        log_sigma = self.w2.mul(mapped_term_frequencies) + self.a2
+        mu = torch.mm(self.w1.unsqueeze(0),
+                      mapped_term_frequencies).squeeze(0) + self.a1
+        log_sigma = torch.mm(self.w2.unsqueeze(0),
+                             mapped_term_frequencies).squeeze(0) + self.a2
 
         # A closed-form solution exists since we're assuming q
         # is drawn from a normal distribution.

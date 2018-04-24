@@ -36,11 +36,16 @@ class Corpus(object):
     def __init__(self, vocabulary, stops):
         self.dictionary = Dictionary()
         self.documents = []
-        self.vocabulary = vocabulary
         self.stop_encodings = set()
+        self.stop_size = len(stops)
 
-        for word in vocabulary:
+        # Not all stops are in the vocabulary! Add them for less hassle later.
+        vocabulary = vocabulary.union(stops)
+        self.vocabulary = vocabulary
+        for word in self.vocabulary:
             self.dictionary.add_word(word)
+
+        self.vocab_size = len(vocabulary)  # Don't use dictionary's size.
 
         # Populate the set containing stopword encodings.
         # What the actual words are doesn't matter as long as we can
@@ -94,7 +99,7 @@ class Corpus(object):
         }
         self.documents.append(document_object)
 
-    def compute_term_frequencies(self, seq_tensor):
+    def compute_term_frequencies(self, seq_tensor, corpus):
         """
         Computes the term-frequency vector of 'seq_tensor' in the
         stop-less space.
@@ -104,8 +109,14 @@ class Corpus(object):
         """
         frequencies = torch.FloatTensor(self.vocab_size_no_stops)
         normalizer = torch.sum(seq_tensor)
-        for word in seq_tensor.long():  # Precaution: Only long
-            frequencies[word] += 1 / normalizer
+        for word in seq_tensor.long():
+            # Convert the word into a stopless space vector
+            if word in corpus.dictionary_no_stops.index_to_word:
+                word = corpus.dictionary_no_stops.index_to_word[word]
+                word = corpus.dictionary_no_stops.word_to_index[word]
+                frequencies[word] += 1 / normalizer
+
+            # Do nothing for stop words!
 
         return frequencies
 

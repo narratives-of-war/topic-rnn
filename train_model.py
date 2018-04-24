@@ -24,8 +24,6 @@ TODO:
     Training
     Evaluation
     Logging
-    Define format of Data
-        - Should be separated by paragraph for time
     Define Evaluation Metrics
         - Sentiment Analysis?
         - Perplexity?
@@ -118,7 +116,7 @@ def main():
     if args.model_type not in MODEL_TYPES:
         raise ValueError("Please select a supported model.")
 
-    print("Building corpus from Conflict Wikipedia JSON files:")
+    print("Building corpus:")
     print("Restricting vocabulary based on min token count",
           args.min_token_count)
 
@@ -126,6 +124,7 @@ def main():
     stopwords_file = open(args.stopwords_path, 'r')
     stops = set([s.strip() for s in stopwords_file.readlines()])
 
+    print("Collecting War Wikipedia JSONs:")
     if not os.path.exists(args.built_corpus_path):
         # Pickle the corpus for easy access
         corpus = init_corpus(args.conflicts_train_path,
@@ -135,15 +134,25 @@ def main():
     else:
         corpus = pickle.load(open(args.built_corpus_path, 'rb'))
 
-    vocab_size = len(corpus.dictionary)
+    vocab_size = corpus.vocab_size
     print("Vocabulary Size:", vocab_size)
+    print("Stop size:", corpus.stop_size)
+    print("Vocab size no stops:", corpus.vocab_size_no_stops)
 
     # Create model of the correct type.
     print("Building {} RNN model ------------------".format(args.model_type))
     logger.info("Building {} RNN model".format(args.model_type))
-    model = MODEL_TYPES[args.model_type](vocab_size, args.embedding_size,
-                                         args.hidden_size, args.batch_size,
-                                         layers=2, dropout=args.dropout)
+
+    if args.model_type != "topic":
+        # RNN / LSTM construction
+        model = MODEL_TYPES[args.model_type](vocab_size, args.embedding_size,
+                                             args.hidden_size, args.batch_size,
+                                             layers=2, dropout=args.dropout)
+    else:
+        # TopicRNN Construction
+        model = TopicRNN(vocab_size, args.embedding_size, args.hidden_size,
+                         corpus.stop_size, args.batch_size,
+                         vae_hidden_size=corpus.vocab_size_no_stops)
 
     if args.cuda:
         model.cuda()
@@ -152,13 +161,22 @@ def main():
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    try:
-        train_epoch(model, corpus, args.batch_size, args.bptt_limit, optimizer,
-                    args.cuda)
-    except KeyboardInterrupt:
-        pass
+    if args.model_type != "topic":
+        # Non-topic RNN models are trained on loss that compares
+        # predicted and actual words.
+        try:
+            train_epoch(model, corpus, args.batch_size, args.bptt_limit, optimizer,
+                        args.cuda)
+        except KeyboardInterrupt:
+            pass
+    else:
+        try:
+            train_topic_rnn(model, corpus, args.bptt_limit, optimizer,
+                            args.cuda)
+        except KeyboardInterrupt:
+            pass
 
-    print()  # Printing in-place progress flushes standard out.
+        print()  # Printing in-place progress flushes standard out.
 
     # Calculate perplexity.
     perplexity = evaluate_perplexity(model, corpus, args.batch_size,
@@ -170,7 +188,7 @@ def main():
 def init_corpus(training_path, min_token_count, stops):
     training_files = os.listdir(training_path)
     tokens = []
-    for file in tqdm(training_files):
+    for file in tqdm(training_files[0:10]):
         file_path = os.path.join(training_path, file)
         tokens += extract_tokens_from_conflict_json(file_path)
 
@@ -185,8 +203,8 @@ def init_corpus(training_path, min_token_count, stops):
     # Construct the corpus with the given vocabulary.
     corpus = Corpus(vocabulary, stops)
 
-    print("Constructed corpus from JSON files:")
-    for file in tqdm(training_files):
+    print("Constructing corpus from JSON files:")
+    for file in tqdm(training_files[0:10]):
         # Corpus expects a full file path.
         corpus.add_document(os.path.join(training_path, file))
 
@@ -237,10 +255,10 @@ def train_topic_rnn(model, corpus, bptt_limit, optimizer, cuda):
             for k, portion in enumerate(batched_section):
                 # This uses an encoding from words to integers in a
                 # space that excludes stop words.
-                portion_frequencies = corpus.compute_term_frequencies(portion)
+                portion_frequencies = corpus.compute_term_frequencies(portion, corpus)
                 stop_indicators = corpus.get_stop_indicators(portion)
                 loss = model.likelihood(portion, portion_frequencies,
-                                        stop_indicators)
+                                        stop_indicators, cuda)
 
                 # Perform backpropagation and update parameters.
                 optimizer.zero_grad()
@@ -253,7 +271,7 @@ def train_topic_rnn(model, corpus, bptt_limit, optimizer, cuda):
                                         "Portion:", k,
                                         "of", batches,
                                         "Normalized BPTT Loss:",
-                                        loss.data[0] / bptt_limit)
+                                        loss.data[0])
 
 
 def train_epoch(model, corpus, batch_size, bptt_limit, optimizer, cuda):
