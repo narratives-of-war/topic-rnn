@@ -1,6 +1,7 @@
 import argparse
 from collections import Counter
 import logging
+import math
 import os
 import pickle
 from tqdm import tqdm
@@ -74,6 +75,8 @@ def main():
     parser.add_argument("--min-token-count", type=int, default=10,
                         help=("Number of times a token must be observed "
                               "in order to include it in the vocabulary."))
+    parser.add_argument("--clip", type=int, default=0.33,
+                        help="Gradient Clipping.")
     parser.add_argument("--bptt-limit", type=int, default=50,
                         help="Extent in which the model is allowed to"
                              "backpropagate.")
@@ -154,6 +157,11 @@ def main():
                          corpus.stop_size, args.batch_size,
                          vae_hidden_size=corpus.vocab_size_no_stops)
 
+        # Sanity check
+        # for name, param in model.named_parameters():
+        #     if param.requires_grad:
+        #         print(name, param.data)
+
     if args.cuda:
         model.cuda()
 
@@ -171,7 +179,7 @@ def main():
             pass
     else:
         try:
-            train_topic_rnn(model, corpus, args.bptt_limit, optimizer,
+            train_topic_rnn(model, corpus, args.bptt_limit, args.clip, optimizer,
                             args.cuda)
         except KeyboardInterrupt:
             pass
@@ -211,7 +219,7 @@ def init_corpus(training_path, min_token_count, stops):
     return corpus
 
 
-def train_topic_rnn(model, corpus, bptt_limit, optimizer, cuda):
+def train_topic_rnn(model, corpus, bptt_limit, clip, optimizer, cuda):
     """
     This model trains differently than baselines; it computes the likelihood
     of a portion of text under the model instead of doing cross entropy against
@@ -257,12 +265,21 @@ def train_topic_rnn(model, corpus, bptt_limit, optimizer, cuda):
                 # space that excludes stop words.
                 portion_frequencies = corpus.compute_term_frequencies(portion, corpus)
                 stop_indicators = corpus.get_stop_indicators(portion)
-                loss = model.likelihood(portion, portion_frequencies,
-                                        stop_indicators, cuda)
+
+                # Optimize on negative log likelihood.
+                loss = -torch.log(model.likelihood(portion, portion_frequencies,
+                                        stop_indicators, cuda))
+
+                if math.isnan(loss.data[0]) or math.isinf(loss.data[0]):
+                    import pdb
+                    pdb.set_trace()
 
                 # Perform backpropagation and update parameters.
                 optimizer.zero_grad()
                 loss.backward(retain_graph=True)
+
+                # Helps with exploding/vanishing gradient
+                torch.nn.utils.clip_grad_norm(model.parameters(), clip)
                 optimizer.step()
 
                 # Print progress
@@ -271,7 +288,7 @@ def train_topic_rnn(model, corpus, bptt_limit, optimizer, cuda):
                                         "Portion:", k,
                                         "of", batches,
                                         "Normalized BPTT Loss:",
-                                        loss.data[0])
+                                        loss.data[0] / bptt_limit)
 
 
 def train_epoch(model, corpus, batch_size, bptt_limit, optimizer, cuda):
