@@ -45,7 +45,7 @@ class Corpus(object):
         for word in self.vocabulary:
             self.dictionary.add_word(word)
 
-        self.vocab_size = len(vocabulary)  # Don't use dictionary's size.
+        self.vocab_size = len(self.dictionary)
 
         # Populate the set containing stopword encodings.
         # What the actual words are doesn't matter as long as we can
@@ -56,12 +56,12 @@ class Corpus(object):
         # For the neural network that encodes word frequencies.
         vocabulary_no_stops = vocabulary - stops
         self.dictionary_no_stops = Dictionary()
-        self.vocabulary_no_stops = vocabulary_no_stops
-        self.vocab_size_no_stops = len(vocabulary_no_stops)
 
         # STOPLESS PARK! STOPLESS PARK!
-        for word in self.vocabulary_no_stops:
+        for word in vocabulary_no_stops:
             self.dictionary_no_stops.add_word(word)
+
+        self.vocab_size_no_stops = len(self.dictionary_no_stops)
 
     def add_document(self, path):
         """
@@ -107,14 +107,14 @@ class Corpus(object):
         :return: A new vector in stopless space containing the counts of
                 the words normalized by the size of the seq_tensor.
         """
-        frequencies = torch.FloatTensor(self.vocab_size_no_stops)
-        normalizer = torch.sum(seq_tensor)
-        for word in seq_tensor.long():
+        frequencies = torch.zeros(self.vocab_size_no_stops).float()
+        normalizer = seq_tensor.size(0)
+        for word_as_idx in seq_tensor.long():
             # Convert the word into a stopless space vector
-            if word in corpus.dictionary_no_stops.index_to_word:
-                word = corpus.dictionary_no_stops.index_to_word[word]
-                word = corpus.dictionary_no_stops.word_to_index[word]
-                frequencies[word] += 1 / normalizer
+            word_as_str = corpus.dictionary.index_to_word[word_as_idx]
+            if word_as_str in corpus.dictionary_no_stops.word_to_index:
+                word_as_idx_stopless = corpus.dictionary_no_stops.word_to_index[word_as_str]
+                frequencies[word_as_idx_stopless] += (1 / normalizer)
 
             # Do nothing for stop words!
 

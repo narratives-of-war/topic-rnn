@@ -7,7 +7,7 @@ import torch.nn as nn
 class TopicRNN(nn.Module):
 
     def __init__(self, vocab_size, embedding_size, hidden_size, stop_size,
-                 batch_size, layers=1, dropout=0.5, vae_hidden_size=128,
+                 batch_size, layers=1, dropout=0.5, vae_hidden_size=64,
                  topic_dim=50):
 
         """
@@ -139,8 +139,6 @@ class TopicRNN(nn.Module):
     def likelihood(self, sequence_tensor, term_frequencies,
                    stop_indicators, cuda, num_samples=1):
 
-        # Compute term frequency
-
         # 1. Compute Kullback-Leibler Divergence
         mapped_term_frequencies = self.g(Variable(term_frequencies))
 
@@ -173,6 +171,7 @@ class TopicRNN(nn.Module):
                     word = word.cuda()
 
                 self.theta = mu + torch.exp(log_sigma) * epsilon
+
                 output, hidden = self.forward(Variable(word), hidden,
                                               stop_indicators[k])
 
@@ -218,11 +217,10 @@ class G(nn.Module):
             nn.Linear(vc_dim, hidden_size * topic_dim),
             nn.ReLU(),
             nn.Linear(hidden_size * topic_dim, hidden_size * topic_dim),
-            nn.ReLU()
         )
 
     def forward(self, term_frequencies):
         output = self.model(term_frequencies)
 
         # Reshape to (E x K) space for calculation of mu and sigma.
-        return output.view(self.hidden_size, self.topic_dim)
+        return nn.Softmax(dim=1)(output.view(self.hidden_size, self.topic_dim))

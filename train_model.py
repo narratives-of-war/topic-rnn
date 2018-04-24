@@ -8,6 +8,7 @@ from tqdm import tqdm
 import sys
 
 import torch
+import torch.nn as nn
 from torch.autograd import Variable
 from torch.nn.functional import cross_entropy, log_softmax
 
@@ -77,7 +78,7 @@ def main():
                               "in order to include it in the vocabulary."))
     parser.add_argument("--clip", type=int, default=0.33,
                         help="Gradient Clipping.")
-    parser.add_argument("--bptt-limit", type=int, default=50,
+    parser.add_argument("--bptt-limit", type=int, default=35,
                         help="Extent in which the model is allowed to"
                              "backpropagate.")
     parser.add_argument("--batch-size", type=int, default=1,
@@ -90,7 +91,7 @@ def main():
                         help="Number of epochs to train for.")
     parser.add_argument("--dropout", type=float, default=0.2,
                         help="Dropout proportion.")
-    parser.add_argument("--lr", type=float, default=0.005,
+    parser.add_argument("--lr", type=float, default=0.00,
                         help="The learning rate to use.")
     parser.add_argument("--log-period", type=int, default=50,
                         help=("Update training metrics every "
@@ -98,6 +99,8 @@ def main():
     parser.add_argument("--validation-period", type=int, default=500,
                         help=("Calculate metrics on validation set every "
                               "validation-period weight updates."))
+    parser.add_argument("--weight-decay", type=float, default=0.5,
+                        help="L2 Penalty.")
     parser.add_argument("--seed", type=int, default=0,
                         help="Random seed to use")
     parser.add_argument("--cuda", action="store_true",
@@ -154,20 +157,20 @@ def main():
     else:
         # TopicRNN Construction
         model = TopicRNN(vocab_size, args.embedding_size, args.hidden_size,
-                         corpus.stop_size, args.batch_size,
-                         vae_hidden_size=corpus.vocab_size_no_stops)
+                         corpus.stop_size, args.batch_size)
 
         # Sanity check
-        # for name, param in model.named_parameters():
-        #     if param.requires_grad:
-        #         print(name, param.data)
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                nn.init.uniform(param)
 
     if args.cuda:
         model.cuda()
 
     logger.info(model)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
+                                 weight_decay=args.weight_decay)
 
     if args.model_type != "topic":
         # Non-topic RNN models are trained on loss that compares
@@ -188,15 +191,16 @@ def main():
 
     # Calculate perplexity.
     perplexity = evaluate_perplexity(model, corpus, args.batch_size,
-                                     args.bptt_limit, args.cuda)
+                                     args.bptt_limit, args.cuda,
+                                     model_type=args.model_type)
 
-    print("Final perplexity: {.5f}".format(perplexity))
+    print("\n\nFinal perplexity: {}".format(float(perplexity)))
 
 
 def init_corpus(training_path, min_token_count, stops):
     training_files = os.listdir(training_path)
     tokens = []
-    for file in tqdm(training_files[0:10]):
+    for file in tqdm(training_files):
         file_path = os.path.join(training_path, file)
         tokens += extract_tokens_from_conflict_json(file_path)
 
@@ -212,7 +216,7 @@ def init_corpus(training_path, min_token_count, stops):
     corpus = Corpus(vocabulary, stops)
 
     print("Constructing corpus from JSON files:")
-    for file in tqdm(training_files[0:10]):
+    for file in tqdm(training_files):
         # Corpus expects a full file path.
         corpus.add_document(os.path.join(training_path, file))
 
@@ -235,11 +239,15 @@ def train_topic_rnn(model, corpus, bptt_limit, clip, optimizer, cuda):
         # length as our backpropagation-through-time limit.
         num_batches = seq_tensor.size(0) // bptt_limit
 
+        # Not long enough for training!
+        if num_batches == 0:
+            return None, 0
+
         # Discard portions that don't fit evenly.
         seq_tensor = seq_tensor.narrow(0, 0, num_batches * bptt_limit)
 
         # (num_batches x length)
-        seq_tensor = seq_tensor.view(num_batches, -1).t().contiguous()
+        seq_tensor = seq_tensor.view(num_batches, -1).contiguous()
 
         if cuda:
             seq_tensor = seq_tensor.cuda()
@@ -260,6 +268,10 @@ def train_topic_rnn(model, corpus, bptt_limit, clip, optimizer, cuda):
 
             # Batchify the sequence tensor according to backpropagation limit.
             batched_section, batches = batchify_section(section)
+
+            if batches == 0:
+                continue
+
             for k, portion in enumerate(batched_section):
                 # This uses an encoding from words to integers in a
                 # space that excludes stop words.
@@ -268,11 +280,7 @@ def train_topic_rnn(model, corpus, bptt_limit, clip, optimizer, cuda):
 
                 # Optimize on negative log likelihood.
                 loss = -torch.log(model.likelihood(portion, portion_frequencies,
-                                        stop_indicators, cuda))
-
-                if math.isnan(loss.data[0]) or math.isinf(loss.data[0]):
-                    import pdb
-                    pdb.set_trace()
+                                  stop_indicators, cuda))
 
                 # Perform backpropagation and update parameters.
                 optimizer.zero_grad()
@@ -348,7 +356,7 @@ def train_epoch(model, corpus, batch_size, bptt_limit, optimizer, cuda):
                         hidden = Variable(hidden.data)
 
 
-def evaluate_perplexity(model, corpus, batch_size, bptt_limit, cuda):
+def evaluate_perplexity(model, corpus, batch_size, bptt_limit, cuda, model_type="rnn"):
     """
     Calculate perplexity of the trained model for the given corpus..
     """
@@ -366,6 +374,7 @@ def evaluate_perplexity(model, corpus, batch_size, bptt_limit, cuda):
             hidden = model.init_hidden()
 
             # Training at the word level allows flexibility in inference.
+            stop_indicators = corpus.get_stop_indicators(section)
             for k in range(section.size(0) - 1):
                 current_word = word_vector_from_seq(section, k)
                 next_word = word_vector_from_seq(section, k + 1)
@@ -374,7 +383,10 @@ def evaluate_perplexity(model, corpus, batch_size, bptt_limit, cuda):
                     current_word = current_word.cuda()
                     next_word = next_word.cuda()
 
-                output, hidden = model(Variable(current_word), hidden)
+                if model_type == "topic":
+                    output, hidden = model(Variable(current_word), hidden, stop_indicators[k])
+                else:
+                    output, hidden = model(Variable(current_word), hidden)
 
                 # Calculate probability of the next word given the model
                 # in log space.
