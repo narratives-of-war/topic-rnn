@@ -7,7 +7,7 @@ import torch.nn as nn
 class TopicRNN(nn.Module):
 
     def __init__(self, vocab_size, embedding_size, hidden_size, stop_size,
-                 batch_size, layers=1, dropout=0.5, vae_hidden_size=64,
+                 batch_size, layers=1, dropout=0.5, vae_hidden_size=128,
                  topic_dim=50):
 
         """
@@ -63,7 +63,7 @@ class TopicRNN(nn.Module):
         super(TopicRNN, self).__init__()
 
         self.vocab_size = vocab_size  # V
-        self.embedding_size = embedding_size
+        self.embedding_size = embedding_size  # TODO: Pre-trained or not?
         self.hidden_size = hidden_size  # H
         self.vae_hidden_size = vae_hidden_size  # E
         self.stop_size = stop_size
@@ -143,6 +143,7 @@ class TopicRNN(nn.Module):
         mapped_term_frequencies = self.g(Variable(term_frequencies))
 
         # Compute Gaussian parameters
+        # TODO: Swap E and (E x K)?
         mu = torch.mm(self.w1.unsqueeze(0),
                       mapped_term_frequencies).squeeze(0) + self.a1
         log_sigma = torch.mm(self.w2.unsqueeze(0),
@@ -150,13 +151,14 @@ class TopicRNN(nn.Module):
 
         # A closed-form solution exists since we're assuming q
         # is drawn from a normal distribution.
-        kl_div = 1 + 2 * log_sigma - (mu ** 2) - torch.exp(2 * log_sigma)
-        kl_div = torch.sum(kl_div, 0) / 2
+        neg_kl_div = 1 + 2 * log_sigma - (mu ** 2) - torch.exp(2 * log_sigma)
+        neg_kl_div = torch.sum(neg_kl_div, 0) / 2
 
         # 2. Sample all words in the sequence
 
         def normal_noise():
             # Sample gaussian noise between steps and sample the words
+            # TODO: K-dimensional for ham with sigma
             return torch.rand(1)[0]
 
         log_probabilities = 0
@@ -171,6 +173,7 @@ class TopicRNN(nn.Module):
                     word = word.cuda()
 
                 self.theta = mu + torch.exp(log_sigma) * epsilon
+                self.theta /= torch.sum(self.theta)  # TODO: Softmax?
 
                 output, hidden = self.forward(Variable(word), hidden,
                                               stop_indicators[k])
@@ -182,7 +185,9 @@ class TopicRNN(nn.Module):
                 log_probabilities += word_probability.data[0]
 
         # Likelihood of the sequence under the model
-        return -kl_div + (log_probabilities / num_samples)
+        # TODO: Scale KL-Div by size of block?
+        # TODO: Print and figure out signs.
+        return neg_kl_div + (log_probabilities / num_samples)
 
 
 class G(nn.Module):
@@ -213,6 +218,7 @@ class G(nn.Module):
         self.hidden_size = hidden_size
         self.topic_dim = topic_dim
 
+        # TODO: Make this simpler
         self.model = nn.Sequential(
             nn.Linear(vc_dim, hidden_size * topic_dim),
             nn.ReLU(),

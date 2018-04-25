@@ -1,7 +1,6 @@
 import argparse
 from collections import Counter
 import logging
-import math
 import os
 import pickle
 from tqdm import tqdm
@@ -76,7 +75,7 @@ def main():
     parser.add_argument("--min-token-count", type=int, default=10,
                         help=("Number of times a token must be observed "
                               "in order to include it in the vocabulary."))
-    parser.add_argument("--clip", type=int, default=0.33,
+    parser.add_argument("--clip", type=int, default=0.25,
                         help="Gradient Clipping.")
     parser.add_argument("--bptt-limit", type=int, default=35,
                         help="Extent in which the model is allowed to"
@@ -91,7 +90,7 @@ def main():
                         help="Number of epochs to train for.")
     parser.add_argument("--dropout", type=float, default=0.2,
                         help="Dropout proportion.")
-    parser.add_argument("--lr", type=float, default=0.00,
+    parser.add_argument("--lr", type=float, default=0.005,
                         help="The learning rate to use.")
     parser.add_argument("--log-period", type=int, default=50,
                         help=("Update training metrics every "
@@ -99,7 +98,7 @@ def main():
     parser.add_argument("--validation-period", type=int, default=500,
                         help=("Calculate metrics on validation set every "
                               "validation-period weight updates."))
-    parser.add_argument("--weight-decay", type=float, default=0.5,
+    parser.add_argument("--weight-decay", type=float, default=0.33,
                         help="L2 Penalty.")
     parser.add_argument("--seed", type=int, default=0,
                         help="Random seed to use")
@@ -270,17 +269,19 @@ def train_topic_rnn(model, corpus, bptt_limit, clip, optimizer, cuda):
             batched_section, batches = batchify_section(section)
 
             if batches == 0:
-                continue
+                continue  # TODO: Add padding instead of tossing it out.
 
             for k, portion in enumerate(batched_section):
                 # This uses an encoding from words to integers in a
                 # space that excludes stop words.
+
+                # TODO: Frequencies from whole document instead of section
                 portion_frequencies = corpus.compute_term_frequencies(portion, corpus)
                 stop_indicators = corpus.get_stop_indicators(portion)
 
                 # Optimize on negative log likelihood.
-                loss = -torch.log(model.likelihood(portion, portion_frequencies,
-                                  stop_indicators, cuda))
+                loss = -model.likelihood(portion, portion_frequencies,
+                                         stop_indicators, cuda)
 
                 # Perform backpropagation and update parameters.
                 optimizer.zero_grad()
