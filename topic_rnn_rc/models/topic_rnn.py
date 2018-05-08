@@ -8,7 +8,7 @@ class TopicRNN(nn.Module):
 
     def __init__(self, vocab_size, embedding_size, hidden_size, stop_size,
                  batch_size, layers=1, dropout=0.5, vae_hidden_size=128,
-                 topic_dim=50):
+                 topic_dim=20):
 
         """
         RNN Language Model with latently learned topics for capturing global
@@ -129,9 +129,10 @@ class TopicRNN(nn.Module):
 
         # Extract word proportions (with and without stop words).
         # Disallow stopwords from having influence.
-        with_stops = self.decoder(hidden).squeeze()
-        no_stops = Variable(self.theta).matmul(self.beta)
-        no_stops = Variable((stops != 0).float()).matmul(no_stops)
+        with_stops = self.decoder(hidden).squeeze(0)
+
+        stop_influence = (stops != 0).float().unsqueeze(1).expand_as(self.theta)
+        no_stops = (self.theta * Variable(stop_influence)).matmul(self.beta)
         return softmax(with_stops + no_stops, dim=1), hidden
 
     def likelihood(self, sequence_tensor, term_frequencies,
@@ -166,9 +167,9 @@ class TopicRNN(nn.Module):
             hidden = self.init_hidden()
             for k in range(sequence_tensor.size(1) - 1):
 
-                # TODO: Make word (batch size,)
-                import pdb
-                pdb.set_trace()
+                # # TODO: Make word (batch size,)
+                # import pdb
+                # pdb.set_trace()
                 word = sequence_tensor[:, k]
                 epsilon = normal_noise()
 
@@ -176,21 +177,18 @@ class TopicRNN(nn.Module):
                     word = word.cuda()
 
                 # Sample theta via mu + sigma (hadamard) epsilon.
-                self.theta = mu.data + torch.exp(log_sigma).data * epsilon
-                self.theta /= torch.sum(self.theta)  # TODO: Softmax?
+                self.theta = softmax(mu + torch.exp(log_sigma) * Variable(epsilon),
+                                     dim=0)
 
                 output, hidden = self.forward(Variable(word), hidden,
                                               stop_indicators[:, k])
 
-                prediction_probabilities = log_softmax(output, 1)
-
-                # Prevent padding from contributing.
                 non_empty_words = Variable((word != 0).float().unsqueeze(1))
-                prediction_probabilities *= non_empty_words
+                prediction_probabilities = log_softmax(output, 1) * non_empty_words
 
                 # Index into probabilities of the actual words.
-                word_index = Variable(word.unsqueeze(1))
-                word_probabilities = prediction_probabilities.gather(1, word_index)
+                word_index = word.unsqueeze(1)
+                word_probabilities = prediction_probabilities.gather(1, Variable(word_index))
 
                 # Update the Monte Carlo sample we have
                 log_probabilities += word_probabilities.squeeze()

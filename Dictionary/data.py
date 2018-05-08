@@ -105,6 +105,28 @@ class Corpus(object):
         }
         self.documents.append(document_object)
 
+    def add_movie_review(self, path, title=""):
+        """
+        Generalized additions to the corpus without needed to be JSON.
+
+        Title is optional, default is nothing.
+        """
+        with open(path, 'r', errors='ignore') as f:
+            sentences = f.readlines()
+
+        # Vectorize all words in the document.
+        encoded_sentences = []
+        for s in sentences:
+            sentence = str(s).strip()
+            encoded_sentence = self.tokenize_from_text(sentence)
+            encoded_sentences.append(encoded_sentence)
+
+        document_object = {
+            "title": title,
+            "sentences": encoded_sentences
+        }
+        self.documents.append(document_object)
+
     def compute_term_frequencies(self, seq_tensor):
         """
         Computes the term-frequency vector of 'seq_tensor' in the
@@ -167,8 +189,7 @@ class ConflictLoader(object):
         num_docs = len(self.corpus.documents)
         docs = random.Random(random_seed).sample(corpus.documents, num_docs)
 
-        self.training = docs[0:int(num_docs * 0.8)]
-        self.development = docs[int(num_docs * 0.8):]
+        self.training = docs
 
     @staticmethod
     def data_loader(batch_size, examples):
@@ -189,9 +210,6 @@ class ConflictLoader(object):
             yield examples[i:i + batch_size]
 
     def training_loader(self, batch_size):
-        return self.data_loader(batch_size, self.training)
-
-    def validation_loader(self, batch_size):
         return self.data_loader(batch_size, self.training)
 
     def test_loader(self, batch_size, test_data):
