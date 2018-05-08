@@ -2,7 +2,7 @@ import argparse
 from collections import Counter
 import logging
 import os
-import pickle
+import dill
 from tqdm import tqdm
 import sys
 
@@ -12,7 +12,7 @@ from torch.autograd import Variable
 from torch.nn.functional import cross_entropy, log_softmax
 
 sys.path.append(os.path.join(os.path.dirname(__file__)))
-from Dictionary import Corpus, word_vector_from_seq,\
+from Dictionary import Corpus, ConflictLoader, word_vector_from_seq,\
     extract_tokens_from_conflict_json
 from topic_rnn_rc.models.topic_rnn import TopicRNN
 from topic_rnn_rc.models.rnn import RNN
@@ -80,7 +80,7 @@ def main():
     parser.add_argument("--bptt-limit", type=int, default=35,
                         help="Extent in which the model is allowed to"
                              "backpropagate.")
-    parser.add_argument("--batch-size", type=int, default=1,
+    parser.add_argument("--batch-size", type=int, default=30,
                         help="Batch size to use in training and evaluation.")
     parser.add_argument("--hidden-size", type=int, default=256,
                         help="Hidden size to use in RNN and TopicRNN models.")
@@ -135,9 +135,9 @@ def main():
         corpus = init_corpus(args.conflicts_train_path,
                              args.min_token_count, stops)
         pickled_corpus = open(args.built_corpus_path, 'wb')
-        pickle.dump(corpus, pickled_corpus)
+        dill.dump(corpus, pickled_corpus)
     else:
-        corpus = pickle.load(open(args.built_corpus_path, 'rb'))
+        corpus = dill.load(open(args.built_corpus_path, 'rb'))
 
     vocab_size = corpus.vocab_size
     print("Vocabulary Size:", vocab_size)
@@ -171,6 +171,7 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
                                  weight_decay=args.weight_decay)
 
+    conflict_loader = ConflictLoader(corpus)
     if args.model_type != "topic":
         # Non-topic RNN models are trained on loss that compares
         # predicted and actual words.
@@ -181,8 +182,8 @@ def main():
             pass
     else:
         try:
-            train_topic_rnn(model, corpus, args.bptt_limit, args.clip, optimizer,
-                            args.cuda)
+            train_topic_rnn(model, corpus, args.batch_size, args.bptt_limit, args.clip, optimizer,
+                            args.cuda, conflict_loader)
         except KeyboardInterrupt:
             pass
 
@@ -199,7 +200,7 @@ def main():
 def init_corpus(training_path, min_token_count, stops):
     training_files = os.listdir(training_path)
     tokens = []
-    for file in tqdm(training_files):
+    for file in tqdm(training_files[:100]):
         file_path = os.path.join(training_path, file)
         tokens += extract_tokens_from_conflict_json(file_path)
 
@@ -215,14 +216,15 @@ def init_corpus(training_path, min_token_count, stops):
     corpus = Corpus(vocabulary, stops)
 
     print("Constructing corpus from JSON files:")
-    for file in tqdm(training_files):
+    for file in tqdm(training_files[:100]):
         # Corpus expects a full file path.
         corpus.add_document(os.path.join(training_path, file))
 
     return corpus
 
 
-def train_topic_rnn(model, corpus, bptt_limit, clip, optimizer, cuda):
+def train_topic_rnn(model, corpus, batch_size, bptt_limit, clip, optimizer, cuda,
+                    conflict_loader):
     """
     This model trains differently than baselines; it computes the likelihood
     of a portion of text under the model instead of doing cross entropy against
@@ -233,71 +235,53 @@ def train_topic_rnn(model, corpus, bptt_limit, clip, optimizer, cuda):
     cause issues).
     """
 
-    def batchify_section(seq_tensor):
-        # Partition the current sequence tensor into batches the same
-        # length as our backpropagation-through-time limit.
-        num_batches = seq_tensor.size(0) // bptt_limit
-
-        # Not long enough for training!
-        if num_batches == 0:
-            return None, 0
-
-        # Discard portions that don't fit evenly.
-        seq_tensor = seq_tensor.narrow(0, 0, num_batches * bptt_limit)
-
-        # (num_batches x length)
-        seq_tensor = seq_tensor.view(num_batches, -1).contiguous()
-
-        if cuda:
-            seq_tensor = seq_tensor.cuda()
-
-        return seq_tensor, num_batches
+    training_loader = conflict_loader.training_loader(batch_size)
 
     # Set model to training mode (activates dropout and other things).
     model.train()
     print("Training in progress:")
-    for i, document in enumerate(corpus.documents):
-        # Incorporation of time requires feeding in by one word at
-        # a time.
-        #
-        # Iterate through the words of the document, calculating loss between
-        # the current word and the next, from first to penultimate.
-        document_name = document["title"]
-        for j, section in enumerate(document["sections"]):
+    for i, batch in enumerate(training_loader):
 
-            # Batchify the sequence tensor according to backpropagation limit.
-            batched_section, batches = batchify_section(section)
+        document_lengths = torch.LongTensor([len(ex["sentences"]) for ex in batch])
+        max_num_sentences = torch.max(document_lengths)
 
-            if batches == 0:
-                continue  # TODO: Add padding instead of tossing it out.
+        # Pre-compute term frequencies and stop indicators for each document.
+        # Shape: (batch size, stopless vocabulary size)
+        term_frequencies = torch.FloatTensor(len(batch), corpus.vocab_size_no_stops)
 
-            for k, portion in enumerate(batched_section):
-                # This uses an encoding from words to integers in a
-                # space that excludes stop words.
+        # Process all documents in the batch in parallel, one sentence at a time.
+        for sentence_index in range(max_num_sentences):
+            sentences_tensor, max_sentence_length = get_sentences_tensor(batch, sentence_index)
 
-                # TODO: Frequencies from whole document instead of section
-                portion_frequencies = corpus.compute_term_frequencies(portion, corpus)
-                stop_indicators = corpus.get_stop_indicators(portion)
+            # Compute stop indicators.
+            # Shape: (batch size, max sentence length)
+            # TODO: What do we do for padded sentences?
+            stop_indicators = torch.zeros(len(batch), max_sentence_length).long()
+            for k, sentence in enumerate(sentences_tensor):
+                stop_indicators[k] = corpus.get_stop_indicators(sentence)
 
-                # Optimize on negative log likelihood.
-                loss = -model.likelihood(portion, portion_frequencies,
-                                         stop_indicators, cuda)
+            # Optimize on negative log likelihood.
+            loss = -model.likelihood(sentences_tensor, term_frequencies,
+                                    stop_indicators, cuda)
 
-                # Perform backpropagation and update parameters.
-                optimizer.zero_grad()
-                loss.backward(retain_graph=True)
+            # Sum loss over batch.
+            loss = loss.sum()
+            print(loss.data)
+            # Perform backpropagation and update parameters.
+            optimizer.zero_grad()
+            loss.backward(retain_graph=True)
 
-                # Helps with exploding/vanishing gradient
-                torch.nn.utils.clip_grad_norm(model.parameters(), clip)
-                optimizer.step()
+            # Helps with exploding/vanishing gradient
+            torch.nn.utils.clip_grad_norm(model.parameters(), clip)
+            optimizer.step()
 
-                # Print progress
-                print_progress_in_place("Document:", document_name,
-                                        "Section:", j,
-                                        "Portion:", k,
-                                        "of", batches,
-                                        "Normalized BPTT Loss:",
-                                        loss.data[0] / bptt_limit)
+            # Print progress
+            # print_progress_in_place("Document:", document_name,
+            #                         "Section:", j,
+            #                         "Portion:", k,
+            #                         "of", batches,
+            #                         "Normalized BPTT Loss:",
+            #                         loss.data[0] / bptt_limit)
 
 
 def train_epoch(model, corpus, batch_size, bptt_limit, optimizer, cuda):
@@ -420,6 +404,32 @@ def evaluate_perplexity(model, corpus, batch_size, bptt_limit, cuda, model_type=
 
         # Final model perplexity given the corpus.
         return 2 ** (-(log_prob_sum / M))
+
+
+def get_sentences_tensor(batch, sentence_index):
+    """
+    Given a batch sized list of examples and the sentence index to extract
+    from, returns a padded sentence tensor containing all the sentences
+    from this batch.
+    """
+
+    # Each example has a list of sentences; find the length of the longest
+    # sentence anywhere in the batch.
+    sentence_lengths = [len(max(ex["sentences"], key=lambda x: x.size(0)))
+                        for ex in batch if len(ex["sentences"]) >= sentence_index]
+    max_sentence_length = max(sentence_lengths)
+
+    # Populate a stacked sentence tensor with padded sentences.
+    sentences_tensor = torch.zeros(len(batch), max_sentence_length).long()
+    for k, ex in enumerate(batch):
+        example_sentences = ex["sentences"]
+        if sentence_index < len(example_sentences):
+            sentence = example_sentences[sentence_index]
+            padded_sentence = [0] * max_sentence_length
+            padded_sentence[:len(sentence)] = sentence
+            sentences_tensor[k] = torch.LongTensor(padded_sentence)
+
+    return sentences_tensor, max_sentence_length
 
 
 def print_progress_in_place(*args):

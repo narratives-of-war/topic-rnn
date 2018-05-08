@@ -95,7 +95,8 @@ class TopicRNN(nn.Module):
         """ Generic RNN Parameters """
 
         # Learned word embeddings (vocab_size x embedding_size)
-        self.embedding = nn.Embedding(vocab_size, embedding_size)
+        self.embedding = nn.Embedding(vocab_size, embedding_size,
+                                      padding_idx=0)
 
         # Elman RNN, accepts vectors of length 'embedding_size'.
         self.rnn = nn.RNN(embedding_size, hidden_size, layers,
@@ -116,7 +117,7 @@ class TopicRNN(nn.Module):
         return Variable(weight.new(self.layers, self.batch_size,
                                    self.hidden_size).zero_())
 
-    def forward(self, input, hidden, stop_word):
+    def forward(self, input, hidden, stops):
         # Embed the passage.
         # Shape: (batch, length (single word), embedding_size)
         embedded_passage = self.embedding(input).view(self.batch_size, 1, -1)
@@ -127,62 +128,69 @@ class TopicRNN(nn.Module):
         output, hidden = self.rnn(embedded_passage, hidden)
 
         # Extract word proportions (with and without stop words).
-        # Squeeze needed since output is 1 x 1 x vocab_size
+        # Disallow stopwords from having influence.
         with_stops = self.decoder(hidden).squeeze()
-
-        if stop_word:
-            return softmax(with_stops, dim=0), hidden
-        else:
-            no_stops = torch.mm(self.theta.unsqueeze(0), self.beta)
-            return softmax(with_stops + no_stops, dim=0), hidden
+        no_stops = Variable(self.theta).matmul(self.beta)
+        no_stops = Variable((stops != 0).float()).matmul(no_stops)
+        return softmax(with_stops + no_stops, dim=1), hidden
 
     def likelihood(self, sequence_tensor, term_frequencies,
                    stop_indicators, cuda, num_samples=1):
+
+        # TODO: stop_indicators should be (batch, max_sentence_length)
 
         # 1. Compute Kullback-Leibler Divergence
         mapped_term_frequencies = self.g(Variable(term_frequencies))
 
         # Compute Gaussian parameters
         # TODO: Swap E and (E x K)?
-        mu = torch.mm(self.w1.unsqueeze(0),
-                      mapped_term_frequencies).squeeze(0) + self.a1
-        log_sigma = torch.mm(self.w2.unsqueeze(0),
-                             mapped_term_frequencies).squeeze(0) + self.a2
+        mu = mapped_term_frequencies.matmul(self.w1) + self.a1
+        log_sigma = mapped_term_frequencies.matmul(self.w2) + self.a2
 
         # A closed-form solution exists since we're assuming q
         # is drawn from a normal distribution.
+        #
+        # Sum along the batch dimension.
         neg_kl_div = 1 + 2 * log_sigma - (mu ** 2) - torch.exp(2 * log_sigma)
-        neg_kl_div = torch.sum(neg_kl_div, 0) / 2
+        neg_kl_div = torch.sum(neg_kl_div, 1) / 2
 
         # 2. Sample all words in the sequence
 
         def normal_noise():
             # Sample gaussian noise between steps and sample the words
-            # TODO: K-dimensional for ham with sigma
-            return torch.rand(1)[0]
+            # Shape: (batch size, K)
+            return torch.rand(sequence_tensor.size(0), self.topic_dim)[0]
 
         log_probabilities = 0
         for l in range(num_samples):
             hidden = self.init_hidden()
-            for k in range(sequence_tensor.size(0) - 1):
-                word = torch.LongTensor(1)
-                word[0] = sequence_tensor[k]
+            for k in range(sequence_tensor.size(1) - 1):
+
+                # TODO: Make word (batch size,)
+                word = sequence_tensor[:, k]
                 epsilon = normal_noise()
 
                 if cuda:
                     word = word.cuda()
 
-                self.theta = mu + torch.exp(log_sigma) * epsilon
+                # Sample theta via mu + sigma (hadamard) epsilon.
+                self.theta = mu.data + torch.exp(log_sigma).data * epsilon
                 self.theta /= torch.sum(self.theta)  # TODO: Softmax?
 
                 output, hidden = self.forward(Variable(word), hidden,
-                                              stop_indicators[k])
+                                              stop_indicators[:, k])
 
-                prediction_probabilities = log_softmax(output.view(-1, 1), 0)
-                word_probability = prediction_probabilities[word[0]]
+                # TODO: Make this (batch, vocabulary)
+                # TODO: Make this safe for batching (it may break since some sentences are null)
+                # Mask to
+                prediction_probabilities = log_softmax(output, 1)
+
+                # Index into probabilities of the actual words.
+                word_index = Variable(word.unsqueeze(1))
+                word_probabilities = prediction_probabilities.gather(1, word_index)
 
                 # Update the Monte Carlo sample we have
-                log_probabilities += word_probability.data[0]
+                log_probabilities += word_probabilities.squeeze()
 
         # Likelihood of the sequence under the model
         # TODO: Scale KL-Div by size of block?
@@ -227,6 +235,8 @@ class G(nn.Module):
 
     def forward(self, term_frequencies):
         output = self.model(term_frequencies)
-
-        # Reshape to (E x K) space for calculation of mu and sigma.
-        return nn.Softmax(dim=1)(output.view(self.hidden_size, self.topic_dim))
+        batch_size = term_frequencies.size(0)
+        # Reshape to (batch size x K x E) space for calculation of mu and sigma.
+        # Normalize along the topic dimension.
+        return nn.Softmax(dim=1)(output.view(batch_size, self.topic_dim,
+                                             self.hidden_size))

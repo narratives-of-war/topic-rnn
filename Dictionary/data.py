@@ -1,18 +1,19 @@
-# Adapted from PyTorch examples:
-# https://github.com/pytorch/examples/blob/master/word_language_model/data.py
+import random
 
+import en_core_web_sm
 import json
 from nltk import word_tokenize
 
 import torch
 
+PAD = "<PAD>"
 UNKNOWN = "<UNKNOWN>"
 
 
 class Dictionary(object):
     def __init__(self):
-        self.word_to_index = {UNKNOWN: 0}
-        self.index_to_word = [UNKNOWN]
+        self.word_to_index = {UNKNOWN: 0, PAD: 1}
+        self.index_to_word = [UNKNOWN, PAD]
 
     def add_word(self, word):
         if word not in self.word_to_index:
@@ -29,13 +30,14 @@ class Corpus(object):
     """
     Corpus class with sequence encoding functionality.
 
-    Use 'tokenize' to both update the vocabulary as well as produce a sequence
-    tensor for the document passed.
+    Use 'add_document' to both update the vocabulary as well as produce
+    sequence tensors for the document passed.
     """
 
     def __init__(self, vocabulary, stops):
         self.dictionary = Dictionary()
         self.documents = []
+        self.nlp = en_core_web_sm.load()
         self.stop_encodings = set()
         self.stop_size = len(stops)
 
@@ -70,7 +72,7 @@ class Corpus(object):
 
         If a file being added does not have "title" and "sections" field, this
         function does nothing.
-        :param path: The path to a training document.
+        :param path: The path to a JSON training document.
         """
         parsed_document = json.load(open(path, 'r'))
 
@@ -81,28 +83,32 @@ class Corpus(object):
         title = parsed_document["title"]
         sections = parsed_document["sections"]
 
-        section_tensors = []
-
         # Vectorize every section of the paper except for references.
         exclude = ["References"]
+        document_raw = ""
         for section in sections:
+            # Collect only semantically significant sections.
             if "heading" in section and section["heading"] not in exclude:
-                section_tensor = self.tokenize_from_text(section["text"])
+                document_raw += ("\n" + section["text"])
 
-                # Handle empty section case.
-                if section_tensor is not None:
-                    section_tensors.append(section_tensor)
+        # Vectorize all words in the document.
+        parsed_document = self.nlp(document_raw)
+        encoded_sentences = []
+        for s in parsed_document.sents:
+            sentence = str(s).strip()
+            encoded_sentence = self.tokenize_from_text(sentence)
+            encoded_sentences.append(encoded_sentence)
 
         document_object = {
             "title": title,
-            "sections": section_tensors
+            "sentences": encoded_sentences
         }
         self.documents.append(document_object)
 
-    def compute_term_frequencies(self, seq_tensor, corpus):
+    def compute_term_frequencies(self, seq_tensor):
         """
         Computes the term-frequency vector of 'seq_tensor' in the
-        stop-less space.
+        stopless space.
         :param seq_tensor: A LongTensor containing word vectors.
         :return: A new vector in stopless space containing the counts of
                 the words normalized by the size of the seq_tensor.
@@ -111,9 +117,9 @@ class Corpus(object):
         normalizer = seq_tensor.size(0)
         for word_as_idx in seq_tensor.long():
             # Convert the word into a stopless space vector
-            word_as_str = corpus.dictionary.index_to_word[word_as_idx]
-            if word_as_str in corpus.dictionary_no_stops.word_to_index:
-                word_as_idx_stopless = corpus.dictionary_no_stops.word_to_index[word_as_str]
+            word_as_str = self.dictionary.index_to_word[word_as_idx]
+            if word_as_str in self.dictionary_no_stops.word_to_index:
+                word_as_idx_stopless = self.dictionary_no_stops.word_to_index[word_as_str]
                 frequencies[word_as_idx_stopless] += (1 / normalizer)
 
             # Do nothing for stop words!
@@ -150,3 +156,43 @@ class Corpus(object):
                 ids[i] = self.dictionary.word_to_index[UNKNOWN]
 
         return ids
+
+
+class ConflictLoader(object):
+    def __init__(self, corpus, random_seed=1):
+        self.corpus = corpus
+
+        # Separate train/dev via an 80:20 split.
+        # Use the provided seed for reproducibility.
+        num_docs = len(self.corpus.documents)
+        docs = random.Random(random_seed).sample(corpus.documents, num_docs)
+
+        self.training = docs[0:int(num_docs * 0.8)]
+        self.development = docs[int(num_docs * 0.8):]
+
+    @staticmethod
+    def data_loader(batch_size, examples):
+        """
+        Returns a generator for 'examples'.
+
+        The final batch may be have fewer than 'batch_size' documents.
+        It is up to the user to decide whether to salvage or discard this batch.
+
+        :param batch_size: int
+            Partitions between data.
+        :param examples: list(JSON)
+            A list of documents in which to partition.
+        :return: A generator that produces 'batch_size' documents at a time.
+        """
+
+        for i in range(0, len(examples), batch_size):
+            yield examples[i:i + batch_size]
+
+    def training_loader(self, batch_size):
+        return self.data_loader(batch_size, self.training)
+
+    def validation_loader(self, batch_size):
+        return self.data_loader(batch_size, self.training)
+
+    def test_loader(self, batch_size, test_data):
+        return self.data_loader(batch_size, test_data)
