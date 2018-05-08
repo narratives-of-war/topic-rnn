@@ -167,6 +167,8 @@ class TopicRNN(nn.Module):
             for k in range(sequence_tensor.size(1) - 1):
 
                 # TODO: Make word (batch size,)
+                import pdb
+                pdb.set_trace()
                 word = sequence_tensor[:, k]
                 epsilon = normal_noise()
 
@@ -180,10 +182,11 @@ class TopicRNN(nn.Module):
                 output, hidden = self.forward(Variable(word), hidden,
                                               stop_indicators[:, k])
 
-                # TODO: Make this (batch, vocabulary)
-                # TODO: Make this safe for batching (it may break since some sentences are null)
-                # Mask to
                 prediction_probabilities = log_softmax(output, 1)
+
+                # Prevent padding from contributing.
+                non_empty_words = Variable((word != 0).float().unsqueeze(1))
+                prediction_probabilities *= non_empty_words
 
                 # Index into probabilities of the actual words.
                 word_index = Variable(word.unsqueeze(1))
