@@ -3,6 +3,7 @@ from collections import Counter
 import logging
 import os
 import dill
+from tabulate import tabulate
 from tqdm import tqdm
 import sys
 
@@ -168,8 +169,7 @@ def main():
 
     logger.info(model)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
-                                 weight_decay=args.weight_decay)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     conflict_loader = ConflictLoader(corpus)
     if args.model_type != "topic":
@@ -249,8 +249,10 @@ def train_topic_rnn(model, corpus, batch_size, bptt_limit, clip, optimizer, cuda
         # Shape: (batch size, stopless vocabulary size)
         term_frequencies = torch.FloatTensor(len(batch), corpus.vocab_size_no_stops)
 
+        loss = 0
+
         # Process all documents in the batch in parallel, one sentence at a time.
-        for sentence_index in range(max_num_sentences):
+        for sentence_index in tqdm(range(max_num_sentences)):
             sentences_tensor, max_sentence_length = get_sentences_tensor(batch, sentence_index)
 
             # Compute stop indicators.
@@ -260,28 +262,34 @@ def train_topic_rnn(model, corpus, batch_size, bptt_limit, clip, optimizer, cuda
             for k, sentence in enumerate(sentences_tensor):
                 stop_indicators[k] = corpus.get_stop_indicators(sentence)
 
+            for k, sentence in enumerate(term_frequencies):
+                term_frequencies[k] = corpus.compute_term_frequencies(sentence)
+
             # Optimize on negative log likelihood.
-            loss = -model.likelihood(sentences_tensor, term_frequencies,
-                                    stop_indicators, cuda)
+            batch_loss = -model.likelihood(sentences_tensor, term_frequencies,
+                                           stop_indicators, cuda)
 
             # Sum loss over batch.
-            loss = loss.sum()
-            print(loss.data)
-            # Perform backpropagation and update parameters.
-            optimizer.zero_grad()
-            loss.backward(retain_graph=True)
+            loss += batch_loss.sum()
 
-            # Helps with exploding/vanishing gradient
-            torch.nn.utils.clip_grad_norm(model.parameters(), clip)
-            optimizer.step()
+            if (sentence_index + 1) % bptt_limit == 0:
+                # Perform backpropagation and update parameters.
+                optimizer.zero_grad()
+                loss.backward(retain_graph=True)
 
-            # Print progress
-            # print_progress_in_place("Document:", document_name,
-            #                         "Section:", j,
-            #                         "Portion:", k,
-            #                         "of", batches,
-            #                         "Normalized BPTT Loss:",
-            #                         loss.data[0] / bptt_limit)
+                print(loss.data[0])
+
+                # Helps with exploding/vanishing gradient
+                torch.nn.utils.clip_grad_norm(model.parameters(), clip)
+                optimizer.step()
+
+                new_topics, new_beta = extract_topics(model, corpus, k=15)
+                print(tabulate(new_topics, headers=["Topic #", "Words"]))
+
+                for name, param in model.named_parameters():
+                    print(name, param.grad is not None)
+
+                loss = 0
 
 
 def train_epoch(model, corpus, batch_size, bptt_limit, optimizer, cuda):
@@ -431,6 +439,31 @@ def get_sentences_tensor(batch, sentence_index):
 
     return sentences_tensor, max_sentence_length
 
+
+def extract_topics(model, corpus, k=20):
+    """
+    Given a model and corpus containing word encodings, print the
+    top k topics present in the model.
+    """
+    beta = None
+    for name, param in model.named_parameters():
+        if name == 'beta':
+            beta = param.clone()
+
+    words = []
+    for i in range(beta.size(1)):
+        words.append(corpus.dictionary.index_to_word[i])
+
+    topics = []
+    for i, row in enumerate(beta):
+        row = [ri.data[0] for ri in row]
+        word_strengths = list(zip(words, row))
+        sorted_by_strength = sorted(word_strengths, key=lambda x: x[1],
+                                    reverse=True)
+        topic = [x[0] for x in sorted_by_strength][:k]
+        topics.append((i, topic))
+
+    return topics, beta
 
 def print_progress_in_place(*args):
     print("\r", *args, end="")
