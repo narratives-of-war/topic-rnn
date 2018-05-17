@@ -92,13 +92,16 @@ class Corpus(object):
                 document_raw += ("\n" + section["text"])
 
         # Vectorize all words in the document.
-        parsed_document = self.nlp(document_raw)
-        encoded_sentences = []
-        for s in parsed_document.sents:
-            sentence = str(s).strip()
-            encoded_sentence = self.tokenize_from_text(sentence)
-            encoded_sentences.append(encoded_sentence)
+        # parsed_document = self.nlp(document_raw)
+        # import pdb
+        # pdb.set_trace()
+        # encoded_sentences = []
+        # for s in parsed_document.sents:
+        #     sentence = str(s).strip()
+        #     encoded_sentence = self.tokenize_from_text(sentence)
+        #     encoded_sentences.append(encoded_sentence)
 
+        encoded_sentences = [self.tokenize_from_text(document_raw.strip())]
         document_object = {
             "title": title,
             "sentences": encoded_sentences

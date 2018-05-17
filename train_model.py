@@ -182,8 +182,9 @@ def main():
             pass
     else:
         try:
-            train_topic_rnn(model, corpus, args.batch_size, args.bptt_limit, args.clip, optimizer,
-                            args.cuda, conflict_loader)
+            for _ in range(args.num_epochs):
+                train_topic_rnn(model, corpus, args.batch_size, args.bptt_limit, args.clip, optimizer,
+                                args.cuda, conflict_loader)
         except KeyboardInterrupt:
             pass
 
@@ -200,7 +201,7 @@ def main():
 def init_corpus(training_path, min_token_count, stops):
     training_files = os.listdir(training_path)
     tokens = []
-    for file in tqdm(training_files[:100]):
+    for file in tqdm(training_files):
         file_path = os.path.join(training_path, file)
         tokens += extract_tokens_from_conflict_json(file_path)
 
@@ -216,7 +217,7 @@ def init_corpus(training_path, min_token_count, stops):
     corpus = Corpus(vocabulary, stops)
 
     print("Constructing corpus from JSON files:")
-    for file in tqdm(training_files[:100]):
+    for file in tqdm(training_files):
         # Corpus expects a full file path.
         corpus.add_document(os.path.join(training_path, file))
 
@@ -261,8 +262,6 @@ def train_topic_rnn(model, corpus, batch_size, bptt_limit, clip, optimizer, cuda
             stop_indicators = torch.zeros(len(batch), max_sentence_length).long()
             for k, sentence in enumerate(sentences_tensor):
                 stop_indicators[k] = corpus.get_stop_indicators(sentence)
-
-            for k, sentence in enumerate(term_frequencies):
                 term_frequencies[k] = corpus.compute_term_frequencies(sentence)
 
             # Optimize on negative log likelihood.
@@ -277,13 +276,13 @@ def train_topic_rnn(model, corpus, batch_size, bptt_limit, clip, optimizer, cuda
                 optimizer.zero_grad()
                 loss.backward(retain_graph=True)
 
-                print(loss.data[0])
+                print(loss)
 
                 # Helps with exploding/vanishing gradient
                 torch.nn.utils.clip_grad_norm(model.parameters(), clip)
                 optimizer.step()
 
-                new_topics, new_beta = extract_topics(model, corpus, k=15)
+                new_topics, new_beta = extract_topics(model, corpus, k=20)
                 print(tabulate(new_topics, headers=["Topic #", "Words"]))
 
                 for name, param in model.named_parameters():
