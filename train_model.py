@@ -85,6 +85,8 @@ def main():
                         help="Hidden size to use in RNN and TopicRNN models.")
     parser.add_argument("--embedding-size", type=int, default=200,
                         help="Embedding size to enocde words for the RNNs.")
+    parser.add_argument("--topic-dim", type=int, default=10,
+                        help="Number of latent topics.")
     parser.add_argument("--num-epochs", type=int, default=25,
                         help="Number of epochs to train for.")
     parser.add_argument("--dropout", type=float, default=0.2,
@@ -149,7 +151,7 @@ def main():
 
     # TopicRNN Construction
     model = TopicRNN(vocabulary.vocab_size, args.embedding_size, args.hidden_size,
-                     args.batch_size)
+                     args.batch_size, topic_dim=args.topic_dim)
 
     if args.cuda:
         model.cuda()
@@ -213,9 +215,9 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
             loss.backward()
             print("--------------------")
             print("LOSS:", (loss.data.item()))
-            sanity_inference = sequence_tensors[0, k:k + bptt_limit].unsqueeze(0)
+            sanity_inference = sequence_tensors[0, k:k + bptt_limit]
             print("Prediction:", ' '.join(predict(model, vocabulary, sanity_inference)))
-            print("From:      ", ' '.join(vocabulary.text_from_encoding(sanity_inference.squeeze())))
+            print("From:      ", ' '.join(vocabulary.text_from_encoding(sanity_inference)))
             print("Hidden state sum:", hidden.sum())
             print("--------------------")
 
@@ -274,8 +276,11 @@ def sieve_vocabulary(training_path, belligerents_path, min_token_count):
 
 
 def predict(model, vocab, sentence):
+    """ Given an encoded sentence, make a prediction. """
     hidden = model.init_hidden(single_example=True)
-    output, hidden = model(Variable(sentence), hidden, None)
+    stops = vocab.get_stop_indicators_from_tensor(sentence).unsqueeze(0)
+    output, hidden = model(Variable(sentence.unsqueeze(0)),
+                           hidden, stops)
     values, indices = torch.max(output, dim=2)
     return vocab.text_from_encoding(indices.data.squeeze())
 

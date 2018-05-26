@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch.autograd import Variable
 import torch.nn as nn
@@ -90,7 +91,6 @@ class TopicRNN(nn.Module):
                                        self.hidden_size).zero_())
 
     def forward(self, input, hidden, stop_indicators):
-
         # Embed the passage.
         # Shape: (batch, length (single word), embedding_size)
         embedded_passage = self.embedding(input)
@@ -104,7 +104,17 @@ class TopicRNN(nn.Module):
         # Shape: (1, 1)
         decoded = self.decoder(output)
 
-        return decoded, hidden
+        # Extract topics for each word
+        # Shape: (batch, sequence, vocabulary)
+        topic_additions = torch.zeros(self.vocab_size)
+        for i in range(self.vocab_size):
+            topic_additions[i] = self.beta[:, i].dot(self.theta)
+
+        topic_additions = topic_additions.view(1, 1, -1).expand_as(decoded)
+        stop_mask = (stop_indicators == 0).unsqueeze(2).expand_as(decoded)
+        topic_additions *= stop_mask.float()
+
+        return decoded + topic_additions, hidden
 
     def likelihood(self, input, hidden, term_frequencies, stop_indicators, target):
         # 1. Compute Kullback-Leibler Divergence
@@ -122,8 +132,7 @@ class TopicRNN(nn.Module):
         # Sum along the batch dimension.
         # neg_kl_div = 1 + 2 * log_sigma - (mu ** 2) - torch.exp(2 * log_sigma)
         # neg_kl_div = torch.sum(neg_kl_div, 1) / 2
-
-        output, hidden = self.forward(input, hidden, None)
+        output, hidden = self.forward(input, hidden, stop_indicators)
         # import pdb
         # pdb.set_trace()
         log_probabilities = cross_entropy(output.view(output.size(0) * output.size(1), -1),
