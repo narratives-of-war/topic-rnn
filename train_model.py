@@ -1,25 +1,22 @@
 import argparse
-from collections import Counter
 import logging
 import os
 import dill
 from tabulate import tabulate
 from tqdm import tqdm
-import re
 import sys
 
-from nltk.tokenize import word_tokenize
 
 import torch
-import torch.nn as nn
 from torch.autograd import Variable
 
-sys.path.append(os.path.join(os.path.dirname(__file__)))
-from dataset_reader import ConflictWikipediaDatasetReader,\
-    extract_tokens_from_conflict_json, Vocabulary
+from dataset_reader import ConflictWikipediaDatasetReader, Vocabulary
 from topic_rnn_rc.models.topic_rnn import TopicRNN
 from topic_rnn_rc.models.rnn import RNN
 from topic_rnn_rc.models.lstm import LSTM
+from utils import create_embeddings_from_vocab, sieve_vocabulary, preserve_pickle, collect_pickle
+
+sys.path.append(os.path.join(os.path.dirname(__file__)))
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +32,8 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     project_root = os.path.abspath(os.path.realpath(os.path.join(
         os.path.dirname(os.path.realpath(__file__)))))
+
+    """File/Directory paths"""
     parser.add_argument("--raw-train-path", type=str,
                         help="Path to the Conflict Wikipedia JSON"
                              "training data.")
@@ -56,6 +55,8 @@ def main():
                             project_root, "data", "test"),
                         help="Path to the Conflict Wikipedia JSON"
                              "dev data.")
+
+    # Vocabulary stuff.
     parser.add_argument("--built-vocab-path", type=str,
                         default=os.path.join(
                             project_root, "vocab.pkl"),
@@ -64,13 +65,19 @@ def main():
                         default=os.path.join(
                             project_root, "en.txt"),
                         help="Path to the list of stop words.")
+    parser.add_argument("--glove-path", type=str,
+                        help="Path to file containing glove embeddings.")
     parser.add_argument("--save-dir", type=str,
                         help=("Path to save model checkpoints and logs. "
                               "Required if not using --load-path. "
                               "May not be used with --load-path."))
+
+    """Model"""
     parser.add_argument("--model-type", type=str, default="vanilla",
                         choices=["vanilla", "topic", "lstm"],
                         help="Model type to train.")
+
+    """Hyperparameters"""
     parser.add_argument("--min-token-count", type=int, default=10,
                         help=("Number of times a token must be observed "
                               "in order to include it in the vocabulary."))
@@ -93,14 +100,19 @@ def main():
                         help="Dropout proportion.")
     parser.add_argument("--lr", type=float, default=0.005,
                         help="The learning rate to use.")
+    parser.add_argument("--weight-decay", type=float, default=0.33,
+                        help="L2 Penalty.")
+    parser.add_argument("--train-embeddings", type=str,
+                        default='False',
+                        help="Flag as to whether embeddings should be learned.")
+
+    """Logistical"""
     parser.add_argument("--log-period", type=int, default=50,
                         help=("Update training metrics every "
                               "log-period weight updates."))
     parser.add_argument("--validation-period", type=int, default=500,
                         help=("Calculate metrics on validation set every "
                               "validation-period weight updates."))
-    parser.add_argument("--weight-decay", type=float, default=0.33,
-                        help="L2 Penalty.")
     parser.add_argument("--seed", type=int, default=0,
                         help="Random seed to use")
     parser.add_argument("--cuda", action="store_true",
@@ -141,26 +153,40 @@ def main():
     print("Stop size:", vocabulary.stop_size)
     print("Vocab size no stops:", vocabulary.stopless_vocab_size)
 
+    embedding_weights = None
+    if args.glove_path:
+        embedding_weights, embedding_size = create_embeddings_from_vocab(vocabulary,
+                                                                         args.glove_path)
+        args.embedding_size = embedding_size
+
     # Create Dataset Reader.
     conflict_reader = ConflictWikipediaDatasetReader(vocabulary,
                                                      batch_size=args.batch_size,
                                                      bptt_limit=args.bptt_limit)
     # Create model of the correct type.
-    print("Building {} RNN model ------------------".format(args.model_type))
+    print("Building {}-RNN model ---------------------------------".format(args.model_type.upper()))
     logger.info("Building {} RNN model".format(args.model_type))
 
     # TopicRNN Construction
-    model = TopicRNN(vocabulary.vocab_size, args.embedding_size, args.hidden_size,
-                     args.batch_size, topic_dim=args.topic_dim)
+    model = TopicRNN(vocabulary.vocab_size, args.embedding_size, args.hidden_size, args.batch_size,
+                     topic_dim=args.topic_dim,
+                     # No support for booleans in argparse atm.
+                     train_embeddings=True,
+                     embedding_matrix=embedding_weights)
 
     if args.cuda:
         model.cuda()
 
     logger.info(model)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    print("Model Parameters -------------------------------------------")
+    for name, param in model.named_parameters():
+        print(name, "Trainable:", param.requires_grad)
+
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()),
+                                 lr=args.lr)
     try:
-        print("Training in progress:")
+        print("Training in progress ---------------------------------------")
         for _ in range(args.num_epochs):
             data_loader = conflict_reader.data_loader(args.train_path,
                                                       document_basis=True)
@@ -168,7 +194,7 @@ def main():
                         args.bptt_limit, args.clip, optimizer,
                         args.cuda)
     except KeyboardInterrupt:
-        print("Stopping training early.")
+        print("Stopping training early ------------------------------------")
         pass
 
 
@@ -188,7 +214,6 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
     last_topics = None
 
     # Set model to training mode (activates dropout and other things).
-    criterion = nn.CrossEntropyLoss()
     model.train()
     for i, batch in enumerate(data_loader):
         sequence_tensors = batch["sequence_tensors"]
@@ -213,21 +238,21 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
             # Perform backpropagation and update parameters.
             optimizer.zero_grad()
             loss.backward()
-            print("--------------------")
-            print("LOSS:", (loss.data.item()))
-            sanity_inference = sequence_tensors[0, k:k + bptt_limit]
-            print("Prediction:", ' '.join(predict(model, vocabulary, sanity_inference)))
-            print("From:      ", ' '.join(vocabulary.text_from_encoding(sanity_inference)))
-            print("Hidden state sum:", hidden.sum())
-            print("--------------------")
 
             # Helps with exploding/vanishing gradient
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
             optimizer.step()
             hidden = hidden.detach()
 
-            # Compute term frequencies (one set delay to prevent cheating :))
+            # Compute term frequencies (one set delay to prevent cheating)
             term_frequencies = vocabulary.compute_term_frequencies(feed.view(-1,))
+
+            """ Progress checking """
+            sanity_inference = sequence_tensors[0, k:k + bptt_limit]
+            print("LOSS:", (loss.data.item()))
+            print("Prediction:", ' '.join(predict(model, vocabulary, sanity_inference)))
+            print("From:      ", ' '.join(vocabulary.text_from_encoding(sanity_inference)))
+            print("Hidden state sum:", hidden.sum())
 
             # new_topics, new_beta = extract_topics(model, vocabulary, k=20)
             # if original_topics is None:
@@ -241,38 +266,7 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
             #     print(tabulate(new_topics, headers=["Topic #", "Words"]))
             # last_topics = new_topics
 
-
-def sieve_vocabulary(training_path, belligerents_path, min_token_count):
-
-    print("Loading documents...")
-    training_files = os.listdir(training_path)
-    tokens = []
-    for file in tqdm(training_files):
-        file_path = os.path.join(training_path, file)
-        with open(file_path, 'r') as f:
-            tokens += f.read().split()
-
-    # Map words to the number of times they occur in the corpus.
-    word_frequencies = dict(Counter(tokens))
-
-    # Sieve the dictionary by excluding all words that appear fewer
-    # than min_token_count times.
-    vocab = set([w for w, f in word_frequencies.items()
-                if f >= min_token_count])
-
-    print("Loading belligerents...")
-    belligerents_files = os.listdir(belligerents_path)
-    for file in tqdm(belligerents_files):
-        file_path = os.path.join(belligerents_path, file)
-        with open(file_path, 'r') as f:
-            belligerents_tokens = word_tokenize(f.read())
-
-        # Keep only words that are alphabetical.
-        belligerents_tokens = [token for token in belligerents_tokens
-                               if re.match(r'^[a-zA-Z]+$', token)]
-        vocab.update(belligerents_tokens)
-
-    return vocab
+            print("+--------------------------------------+")
 
 
 def predict(model, vocab, sentence):
@@ -310,21 +304,6 @@ def extract_topics(model, vocabulary, k=20):
         topics.append((i, topic))
 
     return topics, beta
-
-
-def preserve_pickle(obj, out):
-    with open(out, 'wb') as f:
-        dill.dump(obj, f, protocol=dill.HIGHEST_PROTOCOL)
-
-
-def collect_pickle(out):
-    with open(out, 'rb') as f:
-        return dill.load(f)
-
-
-def print_progress_in_place(*args):
-    print("\r", *args, end="")
-    sys.stdout.flush()
 
 
 if __name__ == "__main__":

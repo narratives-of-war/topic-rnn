@@ -114,7 +114,7 @@ class Vocabulary(object):
 
         Assumes text is already tokenized and separated by whitespace.
         """
-        words = text.split()
+        words = [word.lower() for word in text.split()]
 
         # Some sections may be empty; return None in this case.
         if len(words) == 0:
@@ -151,6 +151,7 @@ class Vocabulary(object):
         return UNKNOWN
 
     def get_index(self, word):
+        word = word.lower()
         if word in self.vocabulary["full"].index_to_word:
             return self.vocabulary["full"].word_to_index[word]
         return 1
@@ -161,6 +162,7 @@ class Vocabulary(object):
         return UNKNOWN
 
     def get_stopless_index(self, word):
+        word = word.lower()
         if word in self.vocabulary["stopless"].index_to_word:
             return self.vocabulary["stopless"].word_to_index[word]
         return 1

@@ -9,7 +9,7 @@ class TopicRNN(nn.Module):
 
     def __init__(self, vocab_size, embedding_size, hidden_size, batch_size,
                  stop_size=528, vae_hidden_size=128, layers=1, dropout=0.5,
-                 topic_dim=30):
+                 topic_dim=15, train_embeddings=False, embedding_matrix=None):
 
         """
         RNN Language model: Choose between Elman, LSTM, and GRU
@@ -64,8 +64,12 @@ class TopicRNN(nn.Module):
         self.softmax = nn.Softmax()
 
         # Learned word embeddings (vocab_size x embedding_size)
-        self.embedding = nn.Embedding(vocab_size, embedding_size,
-                                      padding_idx=0)
+        if embedding_matrix is not None:
+            self.embedding = nn.Embedding.from_pretrained(embedding_matrix,
+                                                          freeze=not train_embeddings)
+        else:
+            self.embedding = nn.Embedding(vocab_size, embedding_size,
+                                          padding_idx=0)
 
         # Elman RNN, accepts vectors of length 'embedding_size'.
         self.rnn = nn.RNN(embedding_size, hidden_size, layers,
@@ -106,15 +110,15 @@ class TopicRNN(nn.Module):
 
         # Extract topics for each word
         # Shape: (batch, sequence, vocabulary)
-        topic_additions = torch.zeros(self.vocab_size)
-        for i in range(self.vocab_size):
-            topic_additions[i] = self.beta[:, i].dot(self.theta)
+        # topic_additions = torch.zeros(self.vocab_size)
+        # for i in range(self.vocab_size):
+        #     topic_additions[i] = self.beta[:, i].dot(self.theta)
 
-        topic_additions = topic_additions.view(1, 1, -1).expand_as(decoded)
-        stop_mask = (stop_indicators == 0).unsqueeze(2).expand_as(decoded)
-        topic_additions *= stop_mask.float()
+        # topic_additions = topic_additions.view(1, 1, -1).expand_as(decoded)
+        # stop_mask = (stop_indicators == 0).unsqueeze(2).expand_as(decoded)
+        # topic_additions *= stop_mask.float()
 
-        return decoded + topic_additions, hidden
+        return decoded, hidden
 
     def likelihood(self, input, hidden, term_frequencies, stop_indicators, target):
         # 1. Compute Kullback-Leibler Divergence
