@@ -1,77 +1,43 @@
 import torch
 from torch.autograd import Variable
-from torch.nn.functional import log_softmax, softmax
 import torch.nn as nn
+from torch.nn.functional import cross_entropy
 
 
 class TopicRNN(nn.Module):
 
-    def __init__(self, vocab_size, embedding_size, hidden_size, stop_size,
-                 batch_size, layers=1, dropout=0.5, vae_hidden_size=128,
-                 topic_dim=20):
+    def __init__(self, vocab_size, embedding_size, hidden_size, batch_size,
+                 stop_size=528, vae_hidden_size=128, layers=1, dropout=0.5,
+                 topic_dim=30):
 
         """
-        RNN Language Model with latently learned topics for capturing global
-        semantics: https://arxiv.org/abs/1611.01702
+        RNN Language model: Choose between Elman, LSTM, and GRU
+        RNN architectures.
 
-        When predicting each word, uses likelihood of it being a stopword to
-        throttle the inclusion of topics in inference.
+        Expects single
 
-        Definitions of Constants
-        ------------------------
-        C - Vocabulary size including stopwords
-        H - RNN hidden size
-        K - Number of topic dimensions
-        E - Normal Distribution parameters inference network's hidden dimension
-
-        Model Parameters and Dimensions
-        -------------------------------
-        U := Projects xt into hidden space.
-        W := RNN f_w weights for calculating h_t (H x H)
-        V := RNN weights for inference on y_t (H x C)
-        beta := Topic distributions over words (row-major) (K x C)
-        theta := Topic vector (K)
-        W_1 := Weights for affine calculating mu (E)
-        W_2 := Weights for affine calculating sigma (E)
-
-        Python/Torch Parameters:
+        Parameters:
         -----------
-
-        :param vocab_size: int
-            The size of the vocabulary.
+        :param embedding_size: int
+            The embedding size for embedding input words (space in which
+            words are projected).
 
         :param hidden_size: int
-            The hidden size of the RNN.
-
-        :param stop_size: int
-            The number of stop words.
-
-        :param batch_size: int
-            Number of examples to observe per forward pass.
-
-        :param vae_hidden_size: int
-            The hidden size of the inference network that approximates
-            the normal distribution for VAE.
-
-        :param topic_dim: int
-            The number of topics the model will learn.
+            The hidden size of the RNN
         """
-
+        # Save the construction arguments, useful for serialization
         self.init_arguments = locals()
         self.init_arguments.pop("self")
         self.init_arguments.pop("__class__")
         super(TopicRNN, self).__init__()
 
-        self.vocab_size = vocab_size  # V
-        self.embedding_size = embedding_size  # TODO: Pre-trained or not?
-        self.hidden_size = hidden_size  # H
-        self.vae_hidden_size = vae_hidden_size  # E
-        self.stop_size = stop_size
+        self.vocab_size = vocab_size
+        self.hidden_size = hidden_size
+        self.embedding_size = embedding_size
         self.batch_size = batch_size
         self.layers = layers
-        self.topic_dim = topic_dim  # K
 
-        """ TopicRNN-specific Parameters """
+        """ TopicRNN-specific """
 
         # Topic proportions randomly initialized (uniform dist).
         topic_proportions = torch.rand(topic_dim)
@@ -92,7 +58,9 @@ class TopicRNN(nn.Module):
         self.w2 = nn.Parameter(torch.rand(vae_hidden_size))
         self.a2 = nn.Parameter(torch.rand(topic_dim))
 
-        """ Generic RNN Parameters """
+        """ General RNN parameters"""
+
+        self.softmax = nn.Softmax()
 
         # Learned word embeddings (vocab_size x embedding_size)
         self.embedding = nn.Embedding(vocab_size, embedding_size,
@@ -106,7 +74,7 @@ class TopicRNN(nn.Module):
         # Decode from hidden state space to vocab space.
         self.decoder = nn.Linear(hidden_size, vocab_size)
 
-    def init_hidden(self):
+    def init_hidden(self, single_example=False):
         """
         Produce a new, initialized hidden state variable where all values
         are zero.
@@ -114,89 +82,53 @@ class TopicRNN(nn.Module):
         """
 
         weight = next(self.parameters()).data
-        return Variable(weight.new(self.layers, self.batch_size,
-                                   self.hidden_size).zero_())
+        if single_example:
+            return Variable(weight.new(self.layers, 1,
+                                       self.hidden_size).zero_())
+        else:
+            return Variable(weight.new(self.layers, self.batch_size,
+                                       self.hidden_size).zero_())
 
-    def forward(self, input, hidden, stops):
+    def forward(self, input, hidden, stop_indicators):
+
         # Embed the passage.
         # Shape: (batch, length (single word), embedding_size)
-        embedded_passage = self.embedding(input).view(self.batch_size, 1, -1)
+        embedded_passage = self.embedding(input)
 
-        # Forward pass through the RNN to compute the hidden state.
+        # Forward pass.
         # Shape (output): (1, hidden_size)
         # Shape (hidden): (layers, batch, hidden_size)
         output, hidden = self.rnn(embedded_passage, hidden)
 
-        # Extract word proportions (with and without stop words).
-        # Disallow stopwords from having influence.
-        with_stops = self.decoder(hidden).squeeze(0)
+        # Decode the final hidden state
+        # Shape: (1, 1)
+        decoded = self.decoder(output)
 
-        stop_influence = (stops != 0).float().unsqueeze(1).expand_as(self.theta)
-        no_stops = (self.theta * Variable(stop_influence)).matmul(self.beta)
-        return softmax(with_stops + no_stops, dim=1), hidden
+        return decoded, hidden
 
-    def likelihood(self, sequence_tensor, term_frequencies,
-                   stop_indicators, cuda, num_samples=1):
-
-        # TODO: stop_indicators should be (batch, max_sentence_length)
-
+    def likelihood(self, input, hidden, term_frequencies, stop_indicators, target):
         # 1. Compute Kullback-Leibler Divergence
-        mapped_term_frequencies = self.g(Variable(term_frequencies))
+        # TODO: Vocab size / G's hidden * topic needs to be mod 0
+        # mapped_term_frequencies = self.g(Variable(term_frequencies))
 
         # Compute Gaussian parameters
         # TODO: Swap E and (E x K)?
-        mu = mapped_term_frequencies.matmul(self.w1) + self.a1
-        log_sigma = mapped_term_frequencies.matmul(self.w2) + self.a2
+        # mu = mapped_term_frequencies.matmul(self.w1) + self.a1
+        # log_sigma = mapped_term_frequencies.matmul(self.w2) + self.a2
 
         # A closed-form solution exists since we're assuming q
         # is drawn from a normal distribution.
         #
         # Sum along the batch dimension.
-        neg_kl_div = 1 + 2 * log_sigma - (mu ** 2) - torch.exp(2 * log_sigma)
-        neg_kl_div = torch.sum(neg_kl_div, 1) / 2
+        # neg_kl_div = 1 + 2 * log_sigma - (mu ** 2) - torch.exp(2 * log_sigma)
+        # neg_kl_div = torch.sum(neg_kl_div, 1) / 2
 
-        # 2. Sample all words in the sequence
-
-        def normal_noise():
-            # Sample gaussian noise between steps and sample the words
-            # Shape: (batch size, K)
-            return torch.rand(sequence_tensor.size(0), self.topic_dim)[0]
-
-        log_probabilities = 0
-        for l in range(num_samples):
-            hidden = self.init_hidden()
-            for k in range(sequence_tensor.size(1) - 1):
-
-                # # TODO: Make word (batch size,)
-                # import pdb
-                # pdb.set_trace()
-                word = sequence_tensor[:, k]
-                epsilon = normal_noise()
-
-                if cuda:
-                    word = word.cuda()
-
-                # Sample theta via mu + sigma (hadamard) epsilon.
-                self.theta = softmax(mu + torch.exp(log_sigma) * Variable(epsilon),
-                                     dim=0)
-
-                output, hidden = self.forward(Variable(word), hidden,
-                                              stop_indicators[:, k])
-
-                non_empty_words = Variable((word != 0).float().unsqueeze(1))
-                prediction_probabilities = log_softmax(output, 1) * non_empty_words
-
-                # Index into probabilities of the actual words.
-                word_index = word.unsqueeze(1)
-                word_probabilities = prediction_probabilities.gather(1, Variable(word_index))
-
-                # Update the Monte Carlo sample we have
-                log_probabilities += word_probabilities.squeeze()
-
-        # Likelihood of the sequence under the model
-        # TODO: Scale KL-Div by size of block?
-        # TODO: Print and figure out signs.
-        return neg_kl_div + (log_probabilities / num_samples)
+        output, hidden = self.forward(input, hidden, None)
+        # import pdb
+        # pdb.set_trace()
+        log_probabilities = cross_entropy(output.view(output.size(0) * output.size(1), -1),
+                                          Variable(target.contiguous().view(-1,)))
+        return log_probabilities, hidden
 
 
 class G(nn.Module):
@@ -226,12 +158,11 @@ class G(nn.Module):
         self.vc_dim = vc_dim
         self.hidden_size = hidden_size
         self.topic_dim = topic_dim
-
-        # TODO: Make this simpler
         self.model = nn.Sequential(
             nn.Linear(vc_dim, hidden_size * topic_dim),
             nn.ReLU(),
             nn.Linear(hidden_size * topic_dim, hidden_size * topic_dim),
+            nn.ReLU()
         )
 
     def forward(self, term_frequencies):

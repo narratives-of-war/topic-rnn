@@ -5,31 +5,23 @@ import os
 import dill
 from tabulate import tabulate
 from tqdm import tqdm
+import re
 import sys
+
+from nltk.tokenize import word_tokenize
 
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
-from torch.nn.functional import cross_entropy, log_softmax
 
 sys.path.append(os.path.join(os.path.dirname(__file__)))
-from Dictionary import Corpus, ConflictLoader, word_vector_from_seq,\
-    extract_tokens_from_conflict_json
+from dataset_reader import ConflictWikipediaDatasetReader,\
+    extract_tokens_from_conflict_json, Vocabulary
 from topic_rnn_rc.models.topic_rnn import TopicRNN
 from topic_rnn_rc.models.rnn import RNN
 from topic_rnn_rc.models.lstm import LSTM
 
 logger = logging.getLogger(__name__)
-
-"""
-TODO:
-    Training
-    Evaluation
-    Logging
-    Define Evaluation Metrics
-        - Sentiment Analysis?
-        - Perplexity?
-"""
 
 MODEL_TYPES = {
     "vanilla": RNN,
@@ -43,25 +35,31 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     project_root = os.path.abspath(os.path.realpath(os.path.join(
         os.path.dirname(os.path.realpath(__file__)))))
-    parser.add_argument("--conflicts-train-path", type=str,
+    parser.add_argument("--raw-train-path", type=str,
+                        help="Path to the Conflict Wikipedia JSON"
+                             "training data.")
+    parser.add_argument("--belligerents-path", type=str,
+                        help="Path to the Conflict Wikipedia JSON"
+                             "belligerents meta-data.")
+    parser.add_argument("--train-path", type=str,
                         default=os.path.join(
                             project_root, "data", "train"),
                         help="Path to the Conflict Wikipedia JSON"
-                             "training data.")
-    parser.add_argument("--conflicts-dev-path", type=str,
+                             "training data (cleaned).")
+    parser.add_argument("--dev-path", type=str,
                         default=os.path.join(
                             project_root, "data", "validation"),
                         help="Path to the Conflict Wikipedia JSON"
                              "dev data.")
-    parser.add_argument("--conflicts-test-path", type=str,
+    parser.add_argument("--test-path", type=str,
                         default=os.path.join(
                             project_root, "data", "test"),
                         help="Path to the Conflict Wikipedia JSON"
                              "dev data.")
-    parser.add_argument("--built-corpus-path", type=str,
+    parser.add_argument("--built-vocab-path", type=str,
                         default=os.path.join(
-                            project_root, "corpus.pkl"),
-                        help="Path to a pre-constructed corpus.")
+                            project_root, "vocab.pkl"),
+                        help="Path to a pre-constructed vocab.")
     parser.add_argument("--stopwords-path", type=str,
                         default=os.path.join(
                             project_root, "en.txt"),
@@ -76,16 +74,16 @@ def main():
     parser.add_argument("--min-token-count", type=int, default=10,
                         help=("Number of times a token must be observed "
                               "in order to include it in the vocabulary."))
-    parser.add_argument("--clip", type=int, default=0.25,
+    parser.add_argument("--clip", type=int, default=0.5,
                         help="Gradient Clipping.")
-    parser.add_argument("--bptt-limit", type=int, default=35,
+    parser.add_argument("--bptt-limit", type=int, default=30,
                         help="Extent in which the model is allowed to"
-                             "backpropagate.")
-    parser.add_argument("--batch-size", type=int, default=30,
+                             "backpropagate in number of words.")
+    parser.add_argument("--batch-size", type=int, default=5,
                         help="Batch size to use in training and evaluation.")
     parser.add_argument("--hidden-size", type=int, default=256,
                         help="Hidden size to use in RNN and TopicRNN models.")
-    parser.add_argument("--embedding-size", type=int, default=50,
+    parser.add_argument("--embedding-size", type=int, default=200,
                         help="Embedding size to enocde words for the RNNs.")
     parser.add_argument("--num-epochs", type=int, default=25,
                         help="Number of epochs to train for.")
@@ -116,13 +114,12 @@ def main():
         else:
             torch.cuda.manual_seed(args.seed)
 
-    if not args.conflicts_train_path:
+    if not args.train_path:
         raise ValueError("Training data directory required")
 
     if args.model_type not in MODEL_TYPES:
         raise ValueError("Please select a supported model.")
 
-    print("Building corpus:")
     print("Restricting vocabulary based on min token count",
           args.min_token_count)
 
@@ -130,39 +127,29 @@ def main():
     stopwords_file = open(args.stopwords_path, 'r')
     stops = set([s.strip() for s in stopwords_file.readlines()])
 
-    print("Collecting War Wikipedia JSONs:")
-    if not os.path.exists(args.built_corpus_path):
-        # Pickle the corpus for easy access
-        corpus = init_corpus(args.conflicts_train_path,
-                             args.min_token_count, stops)
-        pickled_corpus = open(args.built_corpus_path, 'wb')
-        dill.dump(corpus, pickled_corpus)
+    print("Constructing War Wikipedia Dataset:")
+    if not os.path.exists(args.built_vocab_path):
+        vocab = sieve_vocabulary(args.train_path, args.belligerents_path,
+                                 args.min_token_count)
+        vocabulary = Vocabulary(vocab, stops)
+        preserve_pickle(vocabulary, args.built_vocab_path)
     else:
-        corpus = dill.load(open(args.built_corpus_path, 'rb'))
+        vocabulary = collect_pickle(args.built_vocab_path)
+    print("Vocabulary Size:", vocabulary.vocab_size)
+    print("Stop size:", vocabulary.stop_size)
+    print("Vocab size no stops:", vocabulary.stopless_vocab_size)
 
-    vocab_size = corpus.vocab_size
-    print("Vocabulary Size:", vocab_size)
-    print("Stop size:", corpus.stop_size)
-    print("Vocab size no stops:", corpus.vocab_size_no_stops)
-
+    # Create Dataset Reader.
+    conflict_reader = ConflictWikipediaDatasetReader(vocabulary,
+                                                     batch_size=args.batch_size,
+                                                     bptt_limit=args.bptt_limit)
     # Create model of the correct type.
     print("Building {} RNN model ------------------".format(args.model_type))
     logger.info("Building {} RNN model".format(args.model_type))
 
-    if args.model_type != "topic":
-        # RNN / LSTM construction
-        model = MODEL_TYPES[args.model_type](vocab_size, args.embedding_size,
-                                             args.hidden_size, args.batch_size,
-                                             layers=2, dropout=args.dropout)
-    else:
-        # TopicRNN Construction
-        model = TopicRNN(vocab_size, args.embedding_size, args.hidden_size,
-                         corpus.stop_size, args.batch_size)
-
-        # Sanity check
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                nn.init.uniform(param)
+    # TopicRNN Construction
+    model = TopicRNN(vocabulary.vocab_size, args.embedding_size, args.hidden_size,
+                     args.batch_size)
 
     if args.cuda:
         model.cuda()
@@ -170,62 +157,21 @@ def main():
     logger.info(model)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-
-    conflict_loader = ConflictLoader(corpus)
-    if args.model_type != "topic":
-        # Non-topic RNN models are trained on loss that compares
-        # predicted and actual words.
-        try:
-            train_epoch(model, corpus, args.batch_size, args.bptt_limit, optimizer,
+    try:
+        print("Training in progress:")
+        for _ in range(args.num_epochs):
+            data_loader = conflict_reader.data_loader(args.train_path,
+                                                      document_basis=True)
+            train_epoch(model, vocabulary, data_loader, args.batch_size,
+                        args.bptt_limit, args.clip, optimizer,
                         args.cuda)
-        except KeyboardInterrupt:
-            pass
-    else:
-        try:
-            for _ in range(args.num_epochs):
-                train_topic_rnn(model, corpus, args.batch_size, args.bptt_limit, args.clip, optimizer,
-                                args.cuda, conflict_loader)
-        except KeyboardInterrupt:
-            pass
-
-        print()  # Printing in-place progress flushes standard out.
-
-    # Calculate perplexity.
-    perplexity = evaluate_perplexity(model, corpus, args.batch_size,
-                                     args.bptt_limit, args.cuda,
-                                     model_type=args.model_type)
-
-    print("\n\nFinal perplexity: {}".format(float(perplexity)))
+    except KeyboardInterrupt:
+        print("Stopping training early.")
+        pass
 
 
-def init_corpus(training_path, min_token_count, stops):
-    training_files = os.listdir(training_path)
-    tokens = []
-    for file in tqdm(training_files):
-        file_path = os.path.join(training_path, file)
-        tokens += extract_tokens_from_conflict_json(file_path)
-
-    # Map words to the number of times they occur in the corpus.
-    word_frequencies = dict(Counter(tokens))
-
-    # Sieve the dictionary by excluding all words that appear fewer
-    # than min_token_count times.
-    vocabulary = set([w for w, f in word_frequencies.items()
-                      if f >= min_token_count])
-
-    # Construct the corpus with the given vocabulary.
-    corpus = Corpus(vocabulary, stops)
-
-    print("Constructing corpus from JSON files:")
-    for file in tqdm(training_files):
-        # Corpus expects a full file path.
-        corpus.add_document(os.path.join(training_path, file))
-
-    return corpus
-
-
-def train_topic_rnn(model, corpus, batch_size, bptt_limit, clip, optimizer, cuda,
-                    conflict_loader):
+def train_epoch(model, vocabulary, data_loader, batch_size,
+                bptt_limit, clip, optimizer, cuda):
     """
     This model trains differently than baselines; it computes the likelihood
     of a portion of text under the model instead of doing cross entropy against
@@ -236,210 +182,95 @@ def train_topic_rnn(model, corpus, batch_size, bptt_limit, clip, optimizer, cuda
     cause issues).
     """
 
-    training_loader = conflict_loader.training_loader(batch_size)
+    original_topics = None
+    last_topics = None
 
     # Set model to training mode (activates dropout and other things).
+    criterion = nn.CrossEntropyLoss()
     model.train()
-    print("Training in progress:")
-    for i, batch in enumerate(training_loader):
+    for i, batch in enumerate(data_loader):
+        sequence_tensors = batch["sequence_tensors"]
+        term_frequencies = batch["term_frequencies"]
+        stop_indicators = batch["stop_indicators"]
+        hidden = model.init_hidden()
 
-        document_lengths = torch.LongTensor([len(ex["sentences"]) for ex in batch])
-        max_num_sentences = torch.max(document_lengths)
-
-        # Pre-compute term frequencies and stop indicators for each document.
-        # Shape: (batch size, stopless vocabulary size)
-        term_frequencies = torch.FloatTensor(len(batch), corpus.vocab_size_no_stops)
-
-        loss = 0
-
-        # Process all documents in the batch in parallel, one sentence at a time.
-        for sentence_index in tqdm(range(max_num_sentences)):
-            sentences_tensor, max_sentence_length = get_sentences_tensor(batch, sentence_index)
-
-            # Compute stop indicators.
-            # Shape: (batch size, max sentence length)
-            # TODO: What do we do for padded sentences?
-            stop_indicators = torch.zeros(len(batch), max_sentence_length).long()
-            for k, sentence in enumerate(sentences_tensor):
-                stop_indicators[k] = corpus.get_stop_indicators(sentence)
-                term_frequencies[k] = corpus.compute_term_frequencies(sentence)
+        for k in range(sequence_tensors.size(1) - bptt_limit - 1):
 
             # Optimize on negative log likelihood.
-            batch_loss = -model.likelihood(sentences_tensor, term_frequencies,
-                                           stop_indicators, cuda)
+            output, hidden = model(sequence_tensors[:, k:k+bptt_limit], hidden, None)
+            loss = criterion(output.view(output.size(0) * output.size(1), -1),
+                             Variable(sequence_tensors[:, k + 1:k+bptt_limit + 1].contiguous().view(-1,)))
 
-            # Sum loss over batch.
-            loss += batch_loss.sum()
+            # Perform backpropagation and update parameters.
+            optimizer.zero_grad()
+            loss.backward()
+            print("--------------------")
+            print("LOSS:", (loss.data.item()))
+            sanity_inference = sequence_tensors[0, k:k + bptt_limit].unsqueeze(0)
+            print("Prediction:", ' '.join(predict(model, vocabulary, sanity_inference)))
+            print("From:      ", ' '.join(vocabulary.text_from_encoding(sanity_inference.squeeze())))
+            print("Hidden state sum:", hidden.sum())
+            print("--------------------")
 
-            if (sentence_index + 1) % bptt_limit == 0:
-                # Perform backpropagation and update parameters.
-                optimizer.zero_grad()
-                loss.backward(retain_graph=True)
+            # Helps with exploding/vanishing gradient
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+            optimizer.step()
+            hidden = hidden.detach()
 
-                print(loss)
-
-                # Helps with exploding/vanishing gradient
-                torch.nn.utils.clip_grad_norm(model.parameters(), clip)
-                optimizer.step()
-
-                new_topics, new_beta = extract_topics(model, corpus, k=20)
-                print(tabulate(new_topics, headers=["Topic #", "Words"]))
-
-                for name, param in model.named_parameters():
-                    print(name, param.grad is not None)
-
-                loss = 0
-
-
-def train_epoch(model, corpus, batch_size, bptt_limit, optimizer, cuda):
-    """
-    Train the model for one epoch.
-    """
-
-    # Set model to training mode (activates dropout and other things).
-    model.train()
-    print("Training in progress:")
-    for i, document in enumerate(corpus.documents):
-        # Incorporation of time requires feeding in by one word at
-        # a time.
-        #
-        # Iterate through the words of the document, calculating loss between
-        # the current word and the next, from first to penultimate.
-        document_name = document["title"]
-        for j, section in enumerate(document["sections"]):
-            loss = 0
-            hidden = model.init_hidden()
-
-            # Training at the word level allows flexibility in inference.
-            for k in range(section.size(0) - 1):
-                current_word = word_vector_from_seq(section, k)
-                next_word = word_vector_from_seq(section, k + 1)
-
-                if cuda:
-                    current_word = current_word.cuda()
-                    next_word = next_word.cuda()
-
-                output, hidden = model(Variable(current_word), hidden)
-
-                # Calculate loss between prediction and what was anticipated.
-                loss += cross_entropy(output.view(1, -1), Variable(next_word))
-
-                # Perform backpropagation and update parameters.
-                #
-                # Detaches hidden state history to prevent bp all the way
-                # back to the start of the section.
-                if (k + 1) % bptt_limit == 0:
-                    optimizer.zero_grad()
-                    loss.backward(retain_graph=True)
-                    optimizer.step()
-
-                    # Print progress
-                    print_progress_in_place("Document:", document_name,
-                                            "Section:", j,
-                                            "Word:", k,
-                                            "Normalized BPTT Loss:",
-                                            loss.data[0] / bptt_limit)
-
-                    loss = 0
-                    if type(hidden) == tuple:
-                        hidden = tuple(Variable(hidden[i].data)
-                                       for i in range(len(hidden)))
-                    else:
-                        hidden = Variable(hidden.data)
+            # new_topics, new_beta = extract_topics(model, vocabulary, k=20)
+            # if original_topics is None:
+            #     original_topics = new_topics
+            #
+            # if last_topics != new_topics and last_topics is not None and loss.data.item() < 3000:
+            #     print("CHANGE FROM LAST TIME!")
+            #     print("O.G TOPICS ---------------------")
+            #     print(tabulate(original_topics, headers=["Topic #", "Words"]))
+            #     print('NEW ---------------------')
+            #     print(tabulate(new_topics, headers=["Topic #", "Words"]))
+            # last_topics = new_topics
 
 
-def evaluate_perplexity(model, corpus, batch_size, bptt_limit, cuda, model_type="rnn"):
-    """
-    Calculate perplexity of the trained model for the given corpus..
-    """
+def sieve_vocabulary(training_path, belligerents_path, min_token_count):
 
-    M = 0  # Word count.
-    log_prob_sum = 0  # Log Probability
+    print("Loading documents...")
+    training_files = os.listdir(training_path)
+    tokens = []
+    for file in tqdm(training_files):
+        file_path = os.path.join(training_path, file)
+        with open(file_path, 'r') as f:
+            tokens += f.read().split()
 
-    # Set model to evaluation mode (deactivates dropout).
-    model.eval()
-    print("Evaluation in progress: Perplexity")
-    for i, document in enumerate(corpus.documents):
-        # Iterate through the words of the document, calculating log
-        # probability of the next word given the history at the time.
-        for j, section in enumerate(document["sections"]):
-            hidden = model.init_hidden()
+    # Map words to the number of times they occur in the corpus.
+    word_frequencies = dict(Counter(tokens))
 
-            # Training at the word level allows flexibility in inference.
-            stop_indicators = corpus.get_stop_indicators(section)
-            for k in range(section.size(0) - 1):
-                current_word = word_vector_from_seq(section, k)
-                next_word = word_vector_from_seq(section, k + 1)
+    # Sieve the dictionary by excluding all words that appear fewer
+    # than min_token_count times.
+    vocab = set([w for w, f in word_frequencies.items()
+                if f >= min_token_count])
 
-                if cuda:
-                    current_word = current_word.cuda()
-                    next_word = next_word.cuda()
+    print("Loading belligerents...")
+    belligerents_files = os.listdir(belligerents_path)
+    for file in tqdm(belligerents_files):
+        file_path = os.path.join(belligerents_path, file)
+        with open(file_path, 'r') as f:
+            belligerents_tokens = word_tokenize(f.read())
 
-                if model_type == "topic":
-                    output, hidden = model(Variable(current_word), hidden, stop_indicators[k])
-                else:
-                    output, hidden = model(Variable(current_word), hidden)
+        # Keep only words that are alphabetical.
+        belligerents_tokens = [token for token in belligerents_tokens
+                               if re.match(r'^[a-zA-Z]+$', token)]
+        vocab.update(belligerents_tokens)
 
-                # Calculate probability of the next word given the model
-                # in log space.
-                # Reshape to (vocab size x 1) and perform log softmax over
-                # the first dimension.
-                prediction_probabilities = log_softmax(output.view(-1, 1), 0)
-
-                # Extract next word's probability and update.
-                prob_next_word = prediction_probabilities[next_word[0]]
-                log_prob_sum += prob_next_word.data[0]
-                M += 1
-
-                # Detaches hidden state history at the same rate that is
-                # done in training..
-                if (k + 1) % bptt_limit == 0:
-                    # Print progress
-                    print_progress_in_place("Document #:", i,
-                                            "Section:", j,
-                                            "Word:", k,
-                                            "M:", M,
-                                            "Log Prob Sum:", log_prob_sum,
-                                            "Normalized Perplexity thus far:",
-                                            2 ** (-(log_prob_sum / M)))
-
-                    if type(hidden) == tuple:
-                        hidden = tuple(Variable(hidden[i].data)
-                                       for i in range(len(hidden)))
-                    else:
-                        hidden = Variable(hidden.data)
-
-        # Final model perplexity given the corpus.
-        return 2 ** (-(log_prob_sum / M))
+    return vocab
 
 
-def get_sentences_tensor(batch, sentence_index):
-    """
-    Given a batch sized list of examples and the sentence index to extract
-    from, returns a padded sentence tensor containing all the sentences
-    from this batch.
-    """
-
-    # Each example has a list of sentences; find the length of the longest
-    # sentence anywhere in the batch.
-    sentence_lengths = [len(max(ex["sentences"], key=lambda x: x.size(0)))
-                        for ex in batch if len(ex["sentences"]) >= sentence_index]
-    max_sentence_length = max(sentence_lengths)
-
-    # Populate a stacked sentence tensor with padded sentences.
-    sentences_tensor = torch.zeros(len(batch), max_sentence_length).long()
-    for k, ex in enumerate(batch):
-        example_sentences = ex["sentences"]
-        if sentence_index < len(example_sentences):
-            sentence = example_sentences[sentence_index]
-            padded_sentence = [0] * max_sentence_length
-            padded_sentence[:len(sentence)] = sentence
-            sentences_tensor[k] = torch.LongTensor(padded_sentence)
-
-    return sentences_tensor, max_sentence_length
+def predict(model, vocab, sentence):
+    hidden = model.init_hidden(single_example=True)
+    output, hidden = model(Variable(sentence), hidden, None)
+    values, indices = torch.max(output, dim=2)
+    return vocab.text_from_encoding(indices.data.squeeze())
 
 
-def extract_topics(model, corpus, k=20):
+def extract_topics(model, vocabulary, k=20):
     """
     Given a model and corpus containing word encodings, print the
     top k topics present in the model.
@@ -451,18 +282,30 @@ def extract_topics(model, corpus, k=20):
 
     words = []
     for i in range(beta.size(1)):
-        words.append(corpus.dictionary.index_to_word[i])
+        words.append(vocabulary.get_word(i))
 
     topics = []
     for i, row in enumerate(beta):
-        row = [ri.data[0] for ri in row]
+        row = [ri.item() for ri in row]
         word_strengths = list(zip(words, row))
-        sorted_by_strength = sorted(word_strengths, key=lambda x: x[1],
+        sorted_by_strength = sorted(word_strengths,
+                                    key=lambda x: x[1],
                                     reverse=True)
         topic = [x[0] for x in sorted_by_strength][:k]
         topics.append((i, topic))
 
     return topics, beta
+
+
+def preserve_pickle(obj, out):
+    with open(out, 'wb') as f:
+        dill.dump(obj, f, protocol=dill.HIGHEST_PROTOCOL)
+
+
+def collect_pickle(out):
+    with open(out, 'rb') as f:
+        return dill.load(f)
+
 
 def print_progress_in_place(*args):
     print("\r", *args, end="")

@@ -1,21 +1,6 @@
 import json
 
 from nltk import word_tokenize
-import torch
-
-
-def word_vector_from_seq(sequence_tensor, i):
-    """
-    Collect the vector representation of the ith word in a sequence tensor.
-    :param sequence_tensor: The document in which to collect from.
-    :param i: The ith index of the document.
-    :return: A `torch.LongTensor()` containing the document's ith word's
-        encoding relative to this corpus.
-    """
-
-    word = torch.LongTensor(1)
-    word[0] = sequence_tensor[i]
-    return word
 
 
 def extract_tokens_from_conflict_json(path):
@@ -35,12 +20,10 @@ def extract_tokens_from_conflict_json(path):
     # Collect the content sections.
     sections = parsed_document["sections"]
 
-    tokens = []
-
     # Collect tokens from every section of the paper except for references.
     exclude = ["References"]
-    for section in sections:
-        if "heading" in section and section["heading"] not in exclude:
-            tokens += word_tokenize(section["text"])
+    document_raw = ' '.join([section["text"] for section in sections
+                             if "heading" in section and
+                             section["heading"] not in exclude])
 
-    return tokens
+    return word_tokenize(document_raw)
