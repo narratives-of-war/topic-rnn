@@ -190,16 +190,23 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
     model.train()
     for i, batch in enumerate(data_loader):
         sequence_tensors = batch["sequence_tensors"]
-        term_frequencies = batch["term_frequencies"]
-        stop_indicators = batch["stop_indicators"]
         hidden = model.init_hidden()
-
+        term_frequencies = None
         for k in range(sequence_tensors.size(1) - bptt_limit - 1):
+            feed = sequence_tensors[:, k:k+bptt_limit].contiguous()
+            target = sequence_tensors[:, k + 1:k+bptt_limit + 1].contiguous()
+
+            # Construct stop indicators
+            stop_indicators = torch.zeros(feed.size())
+            for r, row in enumerate(feed):
+                stop_indicators[r] = vocabulary.get_stop_indicators_from_tensor(row)
 
             # Optimize on negative log likelihood.
-            output, hidden = model(sequence_tensors[:, k:k+bptt_limit], hidden, None)
-            loss = criterion(output.view(output.size(0) * output.size(1), -1),
-                             Variable(sequence_tensors[:, k + 1:k+bptt_limit + 1].contiguous().view(-1,)))
+            # output, hidden = model(sequence_tensors[:, k:k+bptt_limit], hidden, None)
+            # loss = criterion(output.view(output.size(0) * output.size(1), -1),
+            #                  Variable(sequence_tensors[:, k + 1:k+bptt_limit + 1].contiguous().view(-1,)))
+
+            loss, hidden = model.likelihood(feed, hidden, term_frequencies, stop_indicators, target)
 
             # Perform backpropagation and update parameters.
             optimizer.zero_grad()
@@ -217,11 +224,14 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
             optimizer.step()
             hidden = hidden.detach()
 
+            # Compute term frequencies (one set delay to prevent cheating :))
+            term_frequencies = vocabulary.compute_term_frequencies(feed.view(-1,))
+
             # new_topics, new_beta = extract_topics(model, vocabulary, k=20)
             # if original_topics is None:
             #     original_topics = new_topics
             #
-            # if last_topics != new_topics and last_topics is not None and loss.data.item() < 3000:
+            # if last_topics != new_topics and last_topics is not None:
             #     print("CHANGE FROM LAST TIME!")
             #     print("O.G TOPICS ---------------------")
             #     print(tabulate(original_topics, headers=["Topic #", "Words"]))
