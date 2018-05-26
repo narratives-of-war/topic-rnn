@@ -171,7 +171,7 @@ def main():
     model = TopicRNN(vocabulary.vocab_size, args.embedding_size, args.hidden_size, args.batch_size,
                      topic_dim=args.topic_dim,
                      # No support for booleans in argparse atm.
-                     train_embeddings=True,
+                     train_embeddings=args.train_embeddings.lower() == 'true',
                      embedding_matrix=embedding_weights)
 
     if args.cuda:
