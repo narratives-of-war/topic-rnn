@@ -293,7 +293,13 @@ def predict(model, vocab, sentence):
     """ Given an encoded sentence, make a prediction. """
     hidden = model.init_hidden(single_example=True)
     stops = vocab.get_stop_indicators_from_tensor(sentence).unsqueeze(0)
-    output, hidden = model(Variable(sentence.unsqueeze(0)),
+
+    # Move to GPU if using cuda
+    sentence = sentence.to(device)
+    hidden = hidden.to(device)
+    stops = stops.to(device)
+
+    output, hidden = model(sentence.unsqueeze(0),
                            hidden, stops)
     values, indices = torch.max(output, dim=2)
     return vocab.text_from_encoding(indices.data.squeeze())
