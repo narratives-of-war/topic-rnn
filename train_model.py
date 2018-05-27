@@ -187,8 +187,8 @@ def main():
     logger.info("Building {} RNN model".format(args.model_type))
 
     # TopicRNN Construction
-    model = TopicRNN(vocabulary.vocab_size, args.embedding_size, args.hidden_size, args.batch_size,
-                     topic_dim=args.topic_dim,
+    model = TopicRNN(vocabulary.vocab_size, args.embedding_size, args.hidden_size,
+                     args.batch_size, device, topic_dim=args.topic_dim,
                      # No support for booleans in argparse atm.
                      train_embeddings=args.train_embeddings.lower() == 'true',
                      embedding_matrix=embedding_weights).to(device)

@@ -8,9 +8,9 @@ from torch.nn.functional import cross_entropy, softmax
 
 class TopicRNN(nn.Module):
 
-    def __init__(self, vocab_size, embedding_size, hidden_size, batch_size,
+    def __init__(self, vocab_size, embedding_size, hidden_size, batch_size, device,
                  stop_size=528, vae_hidden_size=256, layers=2, dropout=0.5,
-                 topic_dim=15, train_embeddings=False, embedding_matrix=None):
+                 topic_dim=15, train_embeddings=False, embedding_matrix=None,):
 
         """
         RNN Language model: Choose between Elman, LSTM, and GRU
@@ -37,6 +37,7 @@ class TopicRNN(nn.Module):
         self.hidden_size = hidden_size
         self.embedding_size = embedding_size
         self.batch_size = batch_size
+        self.device = device
         self.layers = layers
 
         """ TopicRNN-specific """
@@ -116,7 +117,7 @@ class TopicRNN(nn.Module):
         # Extract topics for each word
         # Shape: (batch, sequence, vocabulary)
         if use_topics:
-            topic_additions = torch.zeros(self.vocab_size)
+            topic_additions = torch.zeros(self.vocab_size).to(self.device)
             for i in range(self.vocab_size):
                 topic_additions[i] = self.beta[:, i].dot(self.theta)
 
