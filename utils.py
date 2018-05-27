@@ -65,17 +65,18 @@ def sieve_vocabulary(training_path, belligerents_path, min_token_count,
     vocab = set([w for w, f in word_frequencies.items()
                 if f >= min_token_count])
 
-    print("Loading belligerents...")
-    belligerents_files = os.listdir(belligerents_path)
-    for file in tqdm(belligerents_files):
-        file_path = os.path.join(belligerents_path, file)
-        with open(file_path, 'r') as f:
-            belligerents_tokens = word_tokenize(f.read())
+    if belligerents_path:
+        print("Loading belligerents...")
+        belligerents_files = os.listdir(belligerents_path)
+        for file in tqdm(belligerents_files):
+            file_path = os.path.join(belligerents_path, file)
+            with open(file_path, 'r') as f:
+                belligerents_tokens = word_tokenize(f.read())
 
-        # Keep only words that are alphabetical.
-        belligerents_tokens = [token for token in belligerents_tokens
-                               if re.match(r'^[a-zA-Z]+$', token)]
-        vocab.update(belligerents_tokens)
+            # Keep only words that are alphabetical.
+            belligerents_tokens = [token for token in belligerents_tokens
+                                   if re.match(r'^[a-zA-Z]+$', token)]
+            vocab.update(belligerents_tokens)
 
     if normalize_vocabulary:
         vocab = set([word.lower() for word in vocab])

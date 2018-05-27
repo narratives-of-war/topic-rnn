@@ -1,8 +1,9 @@
 import numpy as np
 import torch
 from torch.autograd import Variable
+from torch.distributions.multivariate_normal import MultivariateNormal
 import torch.nn as nn
-from torch.nn.functional import cross_entropy
+from torch.nn.functional import cross_entropy, softmax
 
 
 class TopicRNN(nn.Module):
@@ -39,6 +40,7 @@ class TopicRNN(nn.Module):
         self.layers = layers
 
         """ TopicRNN-specific """
+        self.topic_dim = topic_dim
 
         # Topic proportions randomly initialized (uniform dist).
         topic_proportions = torch.rand(topic_dim)
@@ -58,6 +60,9 @@ class TopicRNN(nn.Module):
         # sigma
         self.w2 = nn.Parameter(torch.rand(vae_hidden_size))
         self.a2 = nn.Parameter(torch.rand(topic_dim))
+
+        # noise
+        self.noise = MultivariateNormal(torch.zeros(topic_dim), torch.eye(topic_dim))
 
         """ General RNN parameters"""
 
@@ -94,7 +99,7 @@ class TopicRNN(nn.Module):
             return Variable(weight.new(self.layers, self.batch_size,
                                        self.hidden_size).zero_())
 
-    def forward(self, input, hidden, stop_indicators):
+    def forward(self, input, hidden, stop_indicators, use_topics=True):
         # Embed the passage.
         # Shape: (batch, length (single word), embedding_size)
         embedded_passage = self.embedding(input)
@@ -110,38 +115,50 @@ class TopicRNN(nn.Module):
 
         # Extract topics for each word
         # Shape: (batch, sequence, vocabulary)
-        # topic_additions = torch.zeros(self.vocab_size)
-        # for i in range(self.vocab_size):
-        #     topic_additions[i] = self.beta[:, i].dot(self.theta)
+        if use_topics:
+            topic_additions = torch.zeros(self.vocab_size)
+            for i in range(self.vocab_size):
+                topic_additions[i] = self.beta[:, i].dot(self.theta)
 
-        # topic_additions = topic_additions.view(1, 1, -1).expand_as(decoded)
-        # stop_mask = (stop_indicators == 0).unsqueeze(2).expand_as(decoded)
-        # topic_additions *= stop_mask.float()
+            topic_additions = topic_additions.view(1, 1, -1).expand_as(decoded)
+            stop_mask = (stop_indicators == 0).unsqueeze(2).expand_as(decoded)
+            topic_additions *= stop_mask.float()
+
+            decoded += topic_additions
 
         return decoded, hidden
 
     def likelihood(self, input, hidden, term_frequencies, stop_indicators, target):
         # 1. Compute Kullback-Leibler Divergence
         # TODO: Vocab size / G's hidden * topic needs to be mod 0
-        # mapped_term_frequencies = self.g(Variable(term_frequencies))
 
-        # Compute Gaussian parameters
-        # TODO: Swap E and (E x K)?
-        # mu = mapped_term_frequencies.matmul(self.w1) + self.a1
-        # log_sigma = mapped_term_frequencies.matmul(self.w2) + self.a2
+        neg_kl_div = 0
+        if term_frequencies is not None:
+            mapped_term_frequencies = self.g(Variable(term_frequencies))
 
-        # A closed-form solution exists since we're assuming q
-        # is drawn from a normal distribution.
-        #
-        # Sum along the batch dimension.
-        # neg_kl_div = 1 + 2 * log_sigma - (mu ** 2) - torch.exp(2 * log_sigma)
-        # neg_kl_div = torch.sum(neg_kl_div, 1) / 2
-        output, hidden = self.forward(input, hidden, stop_indicators)
-        # import pdb
-        # pdb.set_trace()
+            # Compute Gaussian parameters.
+            mu = mapped_term_frequencies.matmul(self.w1) + self.a1
+            log_sigma = mapped_term_frequencies.matmul(self.w2) + self.a2
+
+            # A closed-form solution exists since we're assuming q
+            # is drawn from a normal distribution.
+            #
+            # Sum along the topic dimension.
+            neg_kl_div = 1 + 2 * log_sigma - (mu ** 2) - torch.exp(2 * log_sigma)
+            neg_kl_div = torch.sum(neg_kl_div) / 2
+
+            # Update topic proportions
+            epsilon = self.noise.rsample()
+            self.theta = softmax(mu + torch.exp(log_sigma) * epsilon, dim=0)
+
+        output, hidden = self.forward(input, hidden, stop_indicators,
+                                      use_topics=term_frequencies is not None)
         log_probabilities = cross_entropy(output.view(output.size(0) * output.size(1), -1),
                                           Variable(target.contiguous().view(-1,)))
-        return log_probabilities, hidden
+
+        # Cross Entropy is already a negated negative likelihood but
+        # the KL-Divergence isn't.
+        return -neg_kl_div + log_probabilities, hidden
 
 
 class G(nn.Module):
@@ -179,9 +196,7 @@ class G(nn.Module):
         )
 
     def forward(self, term_frequencies):
-        output = self.model(term_frequencies)
-        batch_size = term_frequencies.size(0)
-        # Reshape to (batch size x K x E) space for calculation of mu and sigma.
+        # Reshape to (K x E) space for calculation of mu and sigma.
         # Normalize along the topic dimension.
-        return nn.Softmax(dim=1)(output.view(batch_size, self.topic_dim,
-                                             self.hidden_size))
+        output = self.model(term_frequencies)
+        return nn.Softmax(dim=1)(output.view(self.topic_dim, self.hidden_size))
