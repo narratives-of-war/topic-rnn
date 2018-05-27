@@ -61,6 +61,10 @@ def main():
                         default=os.path.join(
                             project_root, "vocab.pkl"),
                         help="Path to a pre-constructed vocab.")
+    parser.add_argument("--built-embeddings-path", type=str,
+                        default=os.path.join(
+                            project_root, "embeddings.pkl"),
+                        help="Path to a pre-constructed embedding matrix.")
     parser.add_argument("--stopwords-path", type=str,
                         default=os.path.join(
                             project_root, "en.txt"),
@@ -154,10 +158,23 @@ def main():
     print("Vocab size no stops:", vocabulary.stopless_vocab_size)
 
     embedding_weights = None
-    if args.glove_path:
+    try:
+        if os.path.exists(args.built_embeddings_path):
+            # save directory already exists, do we really want to overwrite?
+            input("Embeddings {} exists. Press <Enter> "
+                  "to use it and continue, or "
+                  "<Ctrl-c> to delete it.".format(args.built_embeddings_path))
+    except KeyboardInterrupt:
+        os.remove(args.built_embeddings_path)
+        print()
+
+    if os.path.exists(args.built_embeddings_path):
+        embedding_weights = collect_pickle(args.built_embeddings_path)
+    elif args.glove_path:
         embedding_weights, embedding_size = create_embeddings_from_vocab(vocabulary,
                                                                          args.glove_path)
         args.embedding_size = embedding_size
+        preserve_pickle(embedding_weights, args.built_embeddings_path)
 
     # Create Dataset Reader.
     conflict_reader = ConflictWikipediaDatasetReader(vocabulary,
@@ -232,8 +249,8 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
             # output, hidden = model(sequence_tensors[:, k:k+bptt_limit], hidden, None)
             # loss = criterion(output.view(output.size(0) * output.size(1), -1),
             #                  Variable(sequence_tensors[:, k + 1:k+bptt_limit + 1].contiguous().view(-1,)))
-
-            loss, hidden = model.likelihood(feed, hidden, term_frequencies, stop_indicators, target)
+            loss, hidden = model.likelihood(feed, hidden, term_frequencies,
+                                            stop_indicators, target)
 
             # Perform backpropagation and update parameters.
             optimizer.zero_grad()
@@ -254,17 +271,18 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
             print("From:      ", ' '.join(vocabulary.text_from_encoding(sanity_inference)))
             print("Hidden state sum:", hidden.sum())
 
-            # new_topics, new_beta = extract_topics(model, vocabulary, k=20)
-            # if original_topics is None:
-            #     original_topics = new_topics
-            #
-            # if last_topics != new_topics and last_topics is not None:
-            #     print("CHANGE FROM LAST TIME!")
-            #     print("O.G TOPICS ---------------------")
-            #     print(tabulate(original_topics, headers=["Topic #", "Words"]))
-            #     print('NEW ---------------------')
-            #     print(tabulate(new_topics, headers=["Topic #", "Words"]))
-            # last_topics = new_topics
+            if (k + 1) % 10 == 0:
+                new_topics, new_beta = extract_topics(model, vocabulary, k=20)
+                if original_topics is None:
+                    original_topics = new_topics
+
+                if last_topics != new_topics and last_topics is not None:
+                    print("CHANGE FROM LAST TIME!")
+                    print("O.G TOPICS ---------------------")
+                    print(tabulate(original_topics, headers=["Topic #", "Words"]))
+                    print('NEW ---------------------')
+                    print(tabulate(new_topics, headers=["Topic #", "Words"]))
+                last_topics = new_topics
 
             print("+--------------------------------------+")
 
