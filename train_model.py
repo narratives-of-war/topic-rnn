@@ -20,6 +20,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__)))
 
 logger = logging.getLogger(__name__)
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 MODEL_TYPES = {
     "vanilla": RNN,
     "topic": TopicRNN,
@@ -189,10 +191,7 @@ def main():
                      topic_dim=args.topic_dim,
                      # No support for booleans in argparse atm.
                      train_embeddings=args.train_embeddings.lower() == 'true',
-                     embedding_matrix=embedding_weights)
-
-    if args.cuda:
-        model.cuda()
+                     embedding_matrix=embedding_weights).to(device)
 
     logger.info(model)
 
@@ -235,6 +234,8 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
     for i, batch in enumerate(data_loader):
         sequence_tensors = batch["sequence_tensors"]
         hidden = model.init_hidden()
+        hidden = hidden.to(device)
+
         term_frequencies = None
         for k in range(sequence_tensors.size(1) - bptt_limit - 1):
             feed = sequence_tensors[:, k:k+bptt_limit].contiguous()
@@ -246,9 +247,9 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
                 stop_indicators[r] = vocabulary.get_stop_indicators_from_tensor(row)
 
             # Optimize on negative log likelihood.
-            # output, hidden = model(sequence_tensors[:, k:k+bptt_limit], hidden, None)
-            # loss = criterion(output.view(output.size(0) * output.size(1), -1),
-            #                  Variable(sequence_tensors[:, k + 1:k+bptt_limit + 1].contiguous().view(-1,)))
+            feed = feed.to(device)
+            stop_indicators = stop_indicators.to(device)
+            target = target.to(device)
             loss, hidden = model.likelihood(feed, hidden, term_frequencies,
                                             stop_indicators, target)
 
@@ -263,6 +264,7 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
 
             # Compute term frequencies (one set delay to prevent cheating)
             term_frequencies = vocabulary.compute_term_frequencies(feed.view(-1,))
+            term_frequencies.requires_grad_()
 
             """ Progress checking """
             sanity_inference = sequence_tensors[0, k:k + bptt_limit]

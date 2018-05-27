@@ -9,7 +9,7 @@ from torch.nn.functional import cross_entropy, softmax
 class TopicRNN(nn.Module):
 
     def __init__(self, vocab_size, embedding_size, hidden_size, batch_size,
-                 stop_size=528, vae_hidden_size=128, layers=1, dropout=0.5,
+                 stop_size=528, vae_hidden_size=256, layers=2, dropout=0.5,
                  topic_dim=15, train_embeddings=False, embedding_matrix=None):
 
         """
@@ -134,7 +134,7 @@ class TopicRNN(nn.Module):
 
         neg_kl_div = 0
         if term_frequencies is not None:
-            mapped_term_frequencies = self.g(Variable(term_frequencies))
+            mapped_term_frequencies = self.g(term_frequencies)
 
             # Compute Gaussian parameters.
             mu = mapped_term_frequencies.matmul(self.w1) + self.a1
