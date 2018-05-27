@@ -85,10 +85,11 @@ class Vocabulary(object):
         for i, word in enumerate(seq_tensor):
             # If a word does not exist in the stopless space,
             # it must be a stopword.
+            # UNKNOWN and PAD will be treated as a stopword.
             word_str = self.get_word(word)
             word_index = self.get_stopless_index(word_str)
             is_unknown = word_index == self.vocabulary["stopless"].unknown_index
-            if is_unknown:
+            if word <= 1 or is_unknown:
                 stop_indicators[i] = 1
 
         return stop_indicators
