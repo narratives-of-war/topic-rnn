@@ -7,6 +7,9 @@ nltk
 # Numerical computing
 numpy
 
+# For printing topics
+tabulate
+
 # Training curve visualization
 tensorboard==1.0.0a6
 
@@ -21,6 +24,9 @@ pytest
 
 # Lets pytest find our code
 pytest-pythonpath
+
+# Spacy
+spacy
 
 # Style linting
 flake8

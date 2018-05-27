@@ -1,4 +1,4 @@
-
+import torch
 from torch.autograd import Variable
 import torch.nn as nn
 
@@ -35,6 +35,8 @@ class RNN(nn.Module):
         self.embedding_size = embedding_size
         self.batch_size = batch_size
         self.layers = layers
+
+        self.softmax = nn.Softmax()
 
         # Learned word embeddings (vocab_size x embedding_size)
         self.embedding = nn.Embedding(vocab_size, embedding_size)
@@ -73,4 +75,29 @@ class RNN(nn.Module):
         # Shape: (1, 1)
         decoded = self.decoder(output)
 
-        return decoded, hidden
+        return self.softmax(decoded), hidden
+
+    def likelihood(self, sequence_tensor, cuda, num_samples=1):
+
+        log_probabilities = 0
+        for l in range(num_samples):
+            for k in range(sequence_tensor.size(1) - 1):
+                word = sequence_tensor[:, k]
+
+                if cuda:
+                    word = word.cuda()
+
+                output, hidden = self.forward(Variable(word), hidden)
+
+                next_word = sequence_tensor[:, k + 1]
+                prediction_probabilities = torch.log(output, 1)
+
+                # Index into probabilities of the actual words.
+                word_prediction_index = next_word.unsqueeze(1)
+                word_probabilities = prediction_probabilities.gather(1, Variable(word_prediction_index))
+
+                # Update the Monte Carlo sample we have
+                log_probabilities += word_probabilities.squeeze()
+
+        # Likelihood of the sequence under the model.
+        return log_probabilities / num_samples
