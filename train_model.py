@@ -191,7 +191,8 @@ def main():
                      args.batch_size, device, topic_dim=args.topic_dim,
                      # No support for booleans in argparse atm.
                      train_embeddings=args.train_embeddings.lower() == 'true',
-                     embedding_matrix=embedding_weights).to(device)
+                     embedding_matrix=embedding_weights,
+                     stop_size=len(stops)).to(device)
 
     logger.info(model)
 
@@ -263,8 +264,10 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
             hidden = hidden.detach()
 
             # Compute term frequencies (one set delay to prevent cheating)
-            term_frequencies = vocabulary.compute_term_frequencies(feed.view(-1,))
-            term_frequencies.requires_grad_()
+            term_frequencies = torch.Tensor(feed.size(0), vocabulary.stopless_vocab_size)
+            for r in range(term_frequencies.size(0)):
+                term_frequencies[i] = vocabulary.compute_term_frequencies(feed[i])
+            term_frequencies = term_frequencies.to(device)
 
             """ Progress checking """
             sanity_inference = sequence_tensors[0, k:k + bptt_limit]
@@ -300,7 +303,7 @@ def predict(model, vocab, sentence):
     stops = stops.to(device)
 
     output, hidden = model(sentence.unsqueeze(0),
-                           hidden, stops)
+                           hidden, stops, use_topics=False)
     values, indices = torch.max(output, dim=2)
     return vocab.text_from_encoding(indices.data.squeeze())
 

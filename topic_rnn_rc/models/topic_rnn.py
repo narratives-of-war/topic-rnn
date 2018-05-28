@@ -52,7 +52,7 @@ class TopicRNN(nn.Module):
         self.beta = nn.Parameter(torch.rand(topic_dim, vocab_size))
 
         # Parameters for the VAE that approximates a normal dist.
-        self.g = G(vocab_size - stop_size, vae_hidden_size, topic_dim)
+        self.g = G(vocab_size - stop_size, vae_hidden_size, topic_dim).to(device)
 
         # mu
         self.w1 = nn.Parameter(torch.rand(vae_hidden_size))
@@ -116,12 +116,16 @@ class TopicRNN(nn.Module):
 
         # Extract topics for each word
         # Shape: (batch, sequence, vocabulary)
+        # Any pair of identical words will receive an equivalent topic
+        # addition.
         if use_topics:
-            topic_additions = torch.zeros(self.vocab_size).to(self.device)
-            for i in range(self.vocab_size):
-                topic_additions[i] = self.beta[:, i].dot(self.theta)
+            topic_additions = torch.Tensor(decoded.size(0), decoded.size(-1))
+            for i in range(decoded.size(0)):
+                for j in range(self.vocab_size):
+                    topic_additions[i][j] = self.beta[:, j].dot(self.theta[i]
+                                                                .to(self.device))
 
-            topic_additions = topic_additions.view(1, 1, -1).expand_as(decoded)
+            topic_additions = topic_additions.unsqueeze(1).expand_as(decoded)
             stop_mask = (stop_indicators == 0).unsqueeze(2).expand_as(decoded)
             topic_additions *= stop_mask.float()
 
@@ -149,8 +153,8 @@ class TopicRNN(nn.Module):
             neg_kl_div = torch.sum(neg_kl_div) / 2
 
             # Update topic proportions
-            epsilon = self.noise.rsample()
-            self.theta = softmax(mu + torch.exp(log_sigma) * epsilon, dim=0)
+            epsilon = self.noise.rsample().to(self.device)
+            self.theta = softmax(mu + torch.exp(log_sigma) * epsilon, dim=-1).to(self.device)
 
         output, hidden = self.forward(input, hidden, stop_indicators,
                                       use_topics=term_frequencies is not None)
@@ -200,4 +204,6 @@ class G(nn.Module):
         # Reshape to (K x E) space for calculation of mu and sigma.
         # Normalize along the topic dimension.
         output = self.model(term_frequencies)
-        return nn.Softmax(dim=1)(output.view(self.topic_dim, self.hidden_size))
+        batch_size = term_frequencies.size(0)
+        return nn.Softmax(dim=1)(output.view(batch_size, self.topic_dim,
+                                             self.hidden_size))
