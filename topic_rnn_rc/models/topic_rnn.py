@@ -6,11 +6,12 @@ import torch.nn as nn
 from torch.nn.functional import cross_entropy, softmax
 
 
+# TODO: Collect stop indices and zero out those columns.
 class TopicRNN(nn.Module):
 
-    def __init__(self, vocab_size, embedding_size, hidden_size, batch_size, device,
-                 stop_size=528, vae_hidden_size=256, layers=2, dropout=0.5,
-                 topic_dim=15, train_embeddings=False, embedding_matrix=None,):
+    def __init__(self, vocab_size, embedding_size, hidden_size, batch_size, stop_indices,
+                 device, vae_hidden_size=1024, layers=2, dropout=0.5, topic_dim=15,
+                 train_embeddings=False, embedding_matrix=None):
 
         """
         RNN Language model: Choose between Elman, LSTM, and GRU
@@ -48,11 +49,13 @@ class TopicRNN(nn.Module):
         topic_proportions /= torch.sum(topic_proportions)
         self.theta = topic_proportions
 
+        self.stop_indices = torch.Tensor(stop_indices).long()
+
         # Topic distributions over words
         self.beta = nn.Parameter(torch.rand(topic_dim, vocab_size))
 
         # Parameters for the VAE that approximates a normal dist.
-        self.g = G(vocab_size - stop_size, vae_hidden_size, topic_dim).to(device)
+        self.g = G(vocab_size - len(stop_indices), vae_hidden_size, topic_dim).to(device)
 
         # mu
         self.w1 = nn.Parameter(torch.rand(vae_hidden_size))
@@ -119,15 +122,9 @@ class TopicRNN(nn.Module):
         # Any pair of identical words will receive an equivalent topic
         # addition.
         if use_topics:
-            topic_additions = torch.Tensor(decoded.size(0), decoded.size(-1))
-            for i in range(decoded.size(0)):
-                for j in range(self.vocab_size):
-                    topic_additions[i][j] = self.beta[:, j].dot(self.theta[i]
-                                                                .to(self.device))
-
+            topic_additions = torch.mm(self.theta, self.beta)
+            topic_additions.t()[self.stop_indices] = 0
             topic_additions = topic_additions.unsqueeze(1).expand_as(decoded)
-            stop_mask = (stop_indicators == 0).unsqueeze(2).expand_as(decoded)
-            topic_additions *= stop_mask.float()
 
             decoded += topic_additions
 

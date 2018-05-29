@@ -97,7 +97,7 @@ def main():
     parser.add_argument("--hidden-size", type=int, default=256,
                         help="Hidden size to use in RNN and TopicRNN models.")
     parser.add_argument("--embedding-size", type=int, default=200,
-                        help="Embedding size to enocde words for the RNNs.")
+                        help="Embedding size to encode words for the RNNs.")
     parser.add_argument("--topic-dim", type=int, default=10,
                         help="Number of latent topics.")
     parser.add_argument("--num-epochs", type=int, default=25,
@@ -159,6 +159,13 @@ def main():
     print("Stop size:", vocabulary.stop_size)
     print("Vocab size no stops:", vocabulary.stopless_vocab_size)
 
+    # Collect stop indices
+    stop_indices = []
+    for stop in stops:
+        stop_indices.append(vocabulary.get_index(stop))
+
+    print(stop_indices)
+
     embedding_weights = None
     try:
         if os.path.exists(args.built_embeddings_path):
@@ -188,11 +195,11 @@ def main():
 
     # TopicRNN Construction
     model = TopicRNN(vocabulary.vocab_size, args.embedding_size, args.hidden_size,
-                     args.batch_size, device, topic_dim=args.topic_dim,
+                     args.batch_size, stop_indices, device,
+                     topic_dim=args.topic_dim,
                      # No support for booleans in argparse atm.
                      train_embeddings=args.train_embeddings.lower() == 'true',
-                     embedding_matrix=embedding_weights,
-                     stop_size=len(stops)).to(device)
+                     embedding_matrix=embedding_weights).to(device)
 
     logger.info(model)
 
@@ -201,7 +208,7 @@ def main():
         print(name, "Trainable:", param.requires_grad)
 
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()),
-                                 lr=args.lr)
+                                 lr=args.lr, betas=(0.99, 0.999))
     try:
         print("Training in progress ---------------------------------------")
         for _ in range(args.num_epochs):
