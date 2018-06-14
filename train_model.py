@@ -82,6 +82,8 @@ def main():
     parser.add_argument("--model-type", type=str, default="vanilla",
                         choices=["vanilla", "topic", "lstm"],
                         help="Model type to train.")
+    parser.add_argument("--use-topics", type=str, default="True",
+                        help="If false, trains as a normal language model.")
 
     """Hyperparameters"""
     parser.add_argument("--min-token-count", type=int, default=10,
@@ -125,6 +127,9 @@ def main():
                         help="Train or evaluate with GPU.")
     args = parser.parse_args()
 
+    # Argparse doesn't handle booleans properly.
+    args.use_topics = args.use_topics == "True"
+
     # Set random seed for reproducibility.
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
@@ -164,8 +169,6 @@ def main():
     for stop in stops:
         stop_indices.append(vocabulary.get_index(stop))
 
-    print(stop_indices)
-
     embedding_weights = None
     try:
         if os.path.exists(args.built_embeddings_path):
@@ -199,7 +202,8 @@ def main():
                      topic_dim=args.topic_dim,
                      # No support for booleans in argparse atm.
                      train_embeddings=args.train_embeddings.lower() == 'true',
-                     embedding_matrix=embedding_weights).to(device)
+                     embedding_matrix=embedding_weights,
+                     use_topics=args.use_topics).to(device)
 
     logger.info(model)
 
@@ -208,22 +212,20 @@ def main():
         print(name, "Trainable:", param.requires_grad)
 
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()),
-                                 lr=args.lr, betas=(0.99, 0.999))
+                                 lr=args.lr)
     try:
         print("Training in progress ---------------------------------------")
         for _ in range(args.num_epochs):
             data_loader = conflict_reader.data_loader(args.train_path,
                                                       document_basis=True)
-            train_epoch(model, vocabulary, data_loader, args.batch_size,
-                        args.bptt_limit, args.clip, optimizer,
-                        args.cuda)
+            train_epoch(model, vocabulary, data_loader, args.bptt_limit,
+                        args.clip, optimizer)
     except KeyboardInterrupt:
         print("Stopping training early ------------------------------------")
         pass
 
 
-def train_epoch(model, vocabulary, data_loader, batch_size,
-                bptt_limit, clip, optimizer, cuda):
+def train_epoch(model, vocabulary, data_loader, bptt_limit, clip, optimizer):
     """
     This model trains differently than baselines; it computes the likelihood
     of a portion of text under the model instead of doing cross entropy against
@@ -241,25 +243,16 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
     model.train()
     for i, batch in enumerate(data_loader):
         sequence_tensors = batch["sequence_tensors"]
-        hidden = model.init_hidden()
-        hidden = hidden.to(device)
-
         term_frequencies = None
         for k in range(sequence_tensors.size(1) - bptt_limit - 1):
+            print("Feed & Target...")
             feed = sequence_tensors[:, k:k+bptt_limit].contiguous()
             target = sequence_tensors[:, k + 1:k+bptt_limit + 1].contiguous()
 
-            # Construct stop indicators
-            stop_indicators = torch.zeros(feed.size())
-            for r, row in enumerate(feed):
-                stop_indicators[r] = vocabulary.get_stop_indicators_from_tensor(row)
-
             # Optimize on negative log likelihood.
             feed = feed.to(device)
-            stop_indicators = stop_indicators.to(device)
             target = target.to(device)
-            loss, hidden = model.likelihood(feed, hidden, term_frequencies,
-                                            stop_indicators, target)
+            loss, hidden = model.likelihood(feed, None, term_frequencies, target)
 
             # Perform backpropagation and update parameters.
             optimizer.zero_grad()
@@ -267,8 +260,8 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
 
             # Helps with exploding/vanishing gradient
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+
             optimizer.step()
-            hidden = hidden.detach()
 
             # Compute term frequencies (one set delay to prevent cheating)
             term_frequencies = torch.Tensor(feed.size(0), vocabulary.stopless_vocab_size)
@@ -302,15 +295,11 @@ def train_epoch(model, vocabulary, data_loader, batch_size,
 def predict(model, vocab, sentence):
     """ Given an encoded sentence, make a prediction. """
     hidden = model.init_hidden(single_example=True)
-    stops = vocab.get_stop_indicators_from_tensor(sentence).unsqueeze(0)
 
     # Move to GPU if using cuda
     sentence = sentence.to(device)
     hidden = hidden.to(device)
-    stops = stops.to(device)
-
-    output, hidden = model(sentence.unsqueeze(0),
-                           hidden, stops, use_topics=False)
+    output, hidden = model(sentence.unsqueeze(0), hidden)
     values, indices = torch.max(output, dim=2)
     return vocab.text_from_encoding(indices.data.squeeze())
 

@@ -1,6 +1,4 @@
-import numpy as np
 import torch
-from torch.autograd import Variable
 from torch.distributions.multivariate_normal import MultivariateNormal
 import torch.nn as nn
 from torch.nn.functional import cross_entropy, softmax
@@ -11,7 +9,7 @@ class TopicRNN(nn.Module):
 
     def __init__(self, vocab_size, embedding_size, hidden_size, batch_size, stop_indices,
                  device, vae_hidden_size=1024, layers=2, dropout=0.5, topic_dim=15,
-                 train_embeddings=False, embedding_matrix=None):
+                 train_embeddings=False, embedding_matrix=None, use_topics=True):
 
         """
         RNN Language model: Choose between Elman, LSTM, and GRU
@@ -40,6 +38,7 @@ class TopicRNN(nn.Module):
         self.batch_size = batch_size
         self.device = device
         self.layers = layers
+        self.use_topics = use_topics
 
         """ TopicRNN-specific """
         self.topic_dim = topic_dim
@@ -97,13 +96,13 @@ class TopicRNN(nn.Module):
 
         weight = next(self.parameters()).data
         if single_example:
-            return Variable(weight.new(self.layers, 1,
-                                       self.hidden_size).zero_())
+            return weight.new(self.layers, 1,
+                              self.hidden_size).zero_()
         else:
-            return Variable(weight.new(self.layers, self.batch_size,
-                                       self.hidden_size).zero_())
+            return weight.new(self.layers, self.batch_size,
+                              self.hidden_size).zero_()
 
-    def forward(self, input, hidden, stop_indicators, use_topics=True):
+    def forward(self, input, hidden):
         # Embed the passage.
         # Shape: (batch, length (single word), embedding_size)
         embedded_passage = self.embedding(input)
@@ -113,29 +112,29 @@ class TopicRNN(nn.Module):
         # Shape (hidden): (layers, batch, hidden_size)
         output, hidden = self.rnn(embedded_passage, hidden)
 
-        # Decode the final hidden state
-        # Shape: (1, 1)
+        # Decode all intermediary hidden states.
         decoded = self.decoder(output)
 
         # Extract topics for each word
         # Shape: (batch, sequence, vocabulary)
-        # Any pair of identical words will receive an equivalent topic
-        # addition.
-        if use_topics:
-            topic_additions = torch.mm(self.theta, self.beta)
+        # Pairs of identical words will receive an equivalent topic addition.
+        if self.use_topics:
+            # View needed if batch size is 1.
+            topic_additions = torch.mm(self.theta.view(self.batch_size, -1), self.beta)
             topic_additions.t()[self.stop_indices] = 0
             topic_additions = topic_additions.unsqueeze(1).expand_as(decoded)
-
             decoded += topic_additions
 
         return decoded, hidden
 
-    def likelihood(self, input, hidden, term_frequencies, stop_indicators, target):
+    def likelihood(self, input, hidden, term_frequencies, target):
         # 1. Compute Kullback-Leibler Divergence
-        # TODO: Vocab size / G's hidden * topic needs to be mod 0
+        if not hidden:
+            hidden = self.init_hidden()
+            hidden = hidden.to(self.device)
 
         neg_kl_div = 0
-        if term_frequencies is not None:
+        if term_frequencies is not None and self.use_topics:
             mapped_term_frequencies = self.g(term_frequencies)
 
             # Compute Gaussian parameters.
@@ -153,10 +152,9 @@ class TopicRNN(nn.Module):
             epsilon = self.noise.rsample().to(self.device)
             self.theta = softmax(mu + torch.exp(log_sigma) * epsilon, dim=-1).to(self.device)
 
-        output, hidden = self.forward(input, hidden, stop_indicators,
-                                      use_topics=term_frequencies is not None)
+        output, hidden = self.forward(input, hidden)
         log_probabilities = cross_entropy(output.view(output.size(0) * output.size(1), -1),
-                                          Variable(target.contiguous().view(-1,)))
+                                          target.contiguous().view(-1,))
 
         # Cross Entropy is already a negated negative likelihood but
         # the KL-Divergence isn't.
