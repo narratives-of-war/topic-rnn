@@ -212,7 +212,7 @@ def main():
         print(name, "Trainable:", param.requires_grad)
 
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()),
-                                 lr=args.lr)
+                                 lr=args.lr, weight_decay=args.weight_decay)
     try:
         print("Training in progress ---------------------------------------")
         for _ in range(args.num_epochs):
@@ -244,8 +244,7 @@ def train_epoch(model, vocabulary, data_loader, bptt_limit, clip, optimizer):
     for i, batch in enumerate(data_loader):
         sequence_tensors = batch["sequence_tensors"]
         term_frequencies = None
-        for k in range(sequence_tensors.size(1) - bptt_limit - 1):
-            print("Feed & Target...")
+        for k in tqdm(range(sequence_tensors.size(1) - bptt_limit - 1)):
             feed = sequence_tensors[:, k:k+bptt_limit].contiguous()
             target = sequence_tensors[:, k + 1:k+bptt_limit + 1].contiguous()
 
@@ -270,13 +269,15 @@ def train_epoch(model, vocabulary, data_loader, bptt_limit, clip, optimizer):
             term_frequencies = term_frequencies.to(device)
 
             """ Progress checking """
-            sanity_inference = sequence_tensors[0, k:k + bptt_limit]
-            print("LOSS:", (loss.data.item()))
-            print("Prediction:", ' '.join(predict(model, vocabulary, sanity_inference)))
-            print("From:      ", ' '.join(vocabulary.text_from_encoding(sanity_inference)))
-            print("Hidden state sum:", hidden.sum())
+            if (k + 1) % 50 == 0:
+                sanity_term_frequency = vocabulary.compute_term_frequencies(sequence_tensors[0, k - bptt_limit:k])
+                sanity_inference = sequence_tensors[0, k:k + bptt_limit]
+                print("LOSS:", (loss.data.item()))
+                print("Prediction:", ' '.join(predict(model, vocabulary,
+                                                  sanity_inference, sanity_term_frequency)))            
+                print("From:      ", ' '.join(vocabulary.text_from_encoding(sanity_inference)))
+                print("Hidden state sum:", hidden.sum())
 
-            if (k + 1) % 10 == 0:
                 new_topics, new_beta = extract_topics(model, vocabulary, k=20)
                 if original_topics is None:
                     original_topics = new_topics
@@ -289,18 +290,20 @@ def train_epoch(model, vocabulary, data_loader, bptt_limit, clip, optimizer):
                     print(tabulate(new_topics, headers=["Topic #", "Words"]))
                 last_topics = new_topics
 
-            print("+--------------------------------------+")
+                print("+--------------------------------------+")
 
 
-def predict(model, vocab, sentence):
+def predict(model, vocab, sentence, term_frequency):
     """ Given an encoded sentence, make a prediction. """
     hidden = model.init_hidden(single_example=True)
 
-    # Move to GPU if using cuda
+    # Move to GPU if using cuda.
     sentence = sentence.to(device)
     hidden = hidden.to(device)
-    output, hidden = model(sentence.unsqueeze(0), hidden)
-    values, indices = torch.max(output, dim=2)
+    term_frequency = term_frequency.float().to(device)
+    output, hidden = model.likelihood(sentence.unsqueeze(0), hidden,
+                                      term_frequency, None, is_single_example=True)
+    values, indices = torch.max(hidden, 2)
     return vocab.text_from_encoding(indices.data.squeeze())
 
 

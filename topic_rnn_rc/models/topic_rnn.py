@@ -8,7 +8,7 @@ from torch.nn.functional import cross_entropy, softmax
 class TopicRNN(nn.Module):
 
     def __init__(self, vocab_size, embedding_size, hidden_size, batch_size, stop_indices,
-                 device, vae_hidden_size=1024, layers=2, dropout=0.5, topic_dim=15,
+                 device, vae_hidden_size=256, layers=2, dropout=0.5, topic_dim=15,
                  train_embeddings=False, embedding_matrix=None, use_topics=True):
 
         """
@@ -44,9 +44,9 @@ class TopicRNN(nn.Module):
         self.topic_dim = topic_dim
 
         # Topic proportions randomly initialized (uniform dist).
-        topic_proportions = torch.rand(topic_dim)
+        topic_proportions = torch.rand(batch_size, topic_dim)
         topic_proportions /= torch.sum(topic_proportions)
-        self.theta = topic_proportions
+        self.theta = topic_proportions.to(device)
 
         self.stop_indices = torch.Tensor(stop_indices).long()
 
@@ -120,20 +120,24 @@ class TopicRNN(nn.Module):
         # Pairs of identical words will receive an equivalent topic addition.
         if self.use_topics:
             # View needed if batch size is 1.
-            topic_additions = torch.mm(self.theta.view(self.batch_size, -1), self.beta)
+            topic_additions = torch.mm(self.theta, self.beta)
             topic_additions.t()[self.stop_indices] = 0
+            topic_additions.t()[0] = 0  # Padding will be treated as stops.
+            topic_additions.t()[1] = 0  # Uknowns will be treated as stops.
             topic_additions = topic_additions.unsqueeze(1).expand_as(decoded)
             decoded += topic_additions
 
         return decoded, hidden
 
-    def likelihood(self, input, hidden, term_frequencies, target):
+    def likelihood(self, input, hidden, term_frequencies, target,
+                   is_single_example=False):
         # 1. Compute Kullback-Leibler Divergence
-        if not hidden:
-            hidden = self.init_hidden()
+        if hidden is None:
+            hidden = self.init_hidden(single_example=is_single_example)
             hidden = hidden.to(self.device)
 
         neg_kl_div = 0
+        log_probabilities = 0
         if term_frequencies is not None and self.use_topics:
             mapped_term_frequencies = self.g(term_frequencies)
 
@@ -153,12 +157,14 @@ class TopicRNN(nn.Module):
             self.theta = softmax(mu + torch.exp(log_sigma) * epsilon, dim=-1).to(self.device)
 
         output, hidden = self.forward(input, hidden)
-        log_probabilities = cross_entropy(output.view(output.size(0) * output.size(1), -1),
-                                          target.contiguous().view(-1,))
+        
+        if target is not None:
+            log_probabilities = cross_entropy(output.view(output.size(0) * output.size(1), -1),
+                                              target.contiguous().view(-1,))
 
         # Cross Entropy is already a negated negative likelihood but
         # the KL-Divergence isn't.
-        return -neg_kl_div + log_probabilities, hidden
+        return -neg_kl_div + log_probabilities, output
 
 
 class G(nn.Module):
@@ -199,6 +205,6 @@ class G(nn.Module):
         # Reshape to (K x E) space for calculation of mu and sigma.
         # Normalize along the topic dimension.
         output = self.model(term_frequencies)
-        batch_size = term_frequencies.size(0)
-        return nn.Softmax(dim=1)(output.view(batch_size, self.topic_dim,
+        return nn.Softmax(dim=1)(output.view(-1, self.topic_dim,
                                              self.hidden_size))
+
