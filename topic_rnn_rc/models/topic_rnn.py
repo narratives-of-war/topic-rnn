@@ -4,7 +4,6 @@ import torch.nn as nn
 from torch.nn.functional import cross_entropy, softmax
 
 
-# TODO: Collect stop indices and zero out those columns.
 class TopicRNN(nn.Module):
 
     def __init__(self, vocab_size, embedding_size, hidden_size, batch_size, stop_indices,
@@ -123,7 +122,7 @@ class TopicRNN(nn.Module):
             topic_additions = torch.mm(self.theta, self.beta)
             topic_additions.t()[self.stop_indices] = 0
             topic_additions.t()[0] = 0  # Padding will be treated as stops.
-            topic_additions.t()[1] = 0  # Uknowns will be treated as stops.
+            topic_additions.t()[1] = 0  # Unknowns will be treated as stops.
             topic_additions = topic_additions.unsqueeze(1).expand_as(decoded)
             decoded += topic_additions
 
@@ -136,7 +135,7 @@ class TopicRNN(nn.Module):
             hidden = self.init_hidden(single_example=is_single_example)
             hidden = hidden.to(self.device)
 
-        neg_kl_div = 0
+        kl_divergence = 0
         log_probabilities = 0
         if term_frequencies is not None and self.use_topics:
             mapped_term_frequencies = self.g(term_frequencies)
@@ -149,8 +148,8 @@ class TopicRNN(nn.Module):
             # is drawn from a normal distribution.
             #
             # Sum along the topic dimension.
-            neg_kl_div = 1 + 2 * log_sigma - (mu ** 2) - torch.exp(2 * log_sigma)
-            neg_kl_div = torch.sum(neg_kl_div) / 2
+            kl_divergence = 1 + 2 * log_sigma - (mu ** 2) - torch.exp(2 * log_sigma)
+            kl_divergence = torch.sum(kl_divergence) / 2
 
             # Update topic proportions
             epsilon = self.noise.rsample().to(self.device)
@@ -164,7 +163,7 @@ class TopicRNN(nn.Module):
 
         # Cross Entropy is already a negated negative likelihood but
         # the KL-Divergence isn't.
-        return -neg_kl_div + log_probabilities, output
+        return -kl_divergence + log_probabilities, output
 
 
 class G(nn.Module):
@@ -207,4 +206,3 @@ class G(nn.Module):
         output = self.model(term_frequencies)
         return nn.Softmax(dim=1)(output.view(-1, self.topic_dim,
                                              self.hidden_size))
-

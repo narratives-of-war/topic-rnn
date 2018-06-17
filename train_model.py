@@ -8,13 +8,12 @@ import sys
 
 
 import torch
-from torch.autograd import Variable
 
-from dataset_reader import ConflictWikipediaDatasetReader, Vocabulary
+from dataset_reader import ConflictDatasetReader, Vocabulary
 from topic_rnn_rc.models.topic_rnn import TopicRNN
 from topic_rnn_rc.models.rnn import RNN
 from topic_rnn_rc.models.lstm import LSTM
-from utils import create_embeddings_from_vocab, sieve_vocabulary, preserve_pickle, collect_pickle
+from utils import *
 
 sys.path.append(os.path.join(os.path.dirname(__file__)))
 
@@ -58,7 +57,13 @@ def main():
                         help="Path to the Conflict Wikipedia JSON"
                              "dev data.")
 
-    # Vocabulary stuff.
+    """ Pre-built Corpus """
+    parser.add_argument("--built-corpus-path", type=str,
+                        default=os.path.join(
+                            project_root, "corpus.pkl"),
+                        help="Path to a pre-constructed dataset.")
+
+    """ Vocabulary stuff """
     parser.add_argument("--built-vocab-path", type=str,
                         default=os.path.join(
                             project_root, "vocab.pkl"),
@@ -154,9 +159,9 @@ def main():
 
     print("Constructing War Wikipedia Dataset:")
     if not os.path.exists(args.built_vocab_path):
-        vocab = sieve_vocabulary(args.train_path, args.belligerents_path,
-                                 args.min_token_count)
-        vocabulary = Vocabulary(vocab, stops)
+        vocab, frequencies = sieve_vocabulary(args.train_path, args.belligerents_path,
+                                              args.min_token_count)
+        vocabulary = Vocabulary(vocab, frequencies, stops)
         preserve_pickle(vocabulary, args.built_vocab_path)
     else:
         vocabulary = collect_pickle(args.built_vocab_path)
@@ -189,11 +194,18 @@ def main():
         preserve_pickle(embedding_weights, args.built_embeddings_path)
 
     # Create Dataset Reader.
-    conflict_reader = ConflictWikipediaDatasetReader(vocabulary,
-                                                     batch_size=args.batch_size,
-                                                     bptt_limit=args.bptt_limit)
+    print_headline("Loading Training Data")
+    if not os.path.exists(args.built_corpus_path):
+        conflict_reader = ConflictDatasetReader(vocabulary,
+                                                batch_size=args.batch_size,
+                                                bptt_limit=args.bptt_limit)
+        conflict_reader.load(args.train_path)
+        preserve_pickle(conflict_reader, args.built_corpus_path)
+    else:
+        conflict_reader = collect_pickle(args.built_corpus_path)
+
     # Create model of the correct type.
-    print("Building {}-RNN model ---------------------------------".format(args.model_type.upper()))
+    print_headline("Building {}-RNN model".format(args.model_type.upper()))
     logger.info("Building {} RNN model".format(args.model_type))
 
     # TopicRNN Construction
@@ -207,21 +219,21 @@ def main():
 
     logger.info(model)
 
-    print("Model Parameters -------------------------------------------")
+    print_headline("Model Parameters")
     for name, param in model.named_parameters():
         print(name, "Trainable:", param.requires_grad)
 
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()),
                                  lr=args.lr, weight_decay=args.weight_decay)
     try:
-        print("Training in progress ---------------------------------------")
+        print_headline("Training in progress")
         for _ in range(args.num_epochs):
-            data_loader = conflict_reader.data_loader(args.train_path,
-                                                      document_basis=True)
+            data_loader = conflict_reader.data_loader()
             train_epoch(model, vocabulary, data_loader, args.bptt_limit,
                         args.clip, optimizer)
     except KeyboardInterrupt:
-        print("Stopping training early ------------------------------------")
+        print()
+        print_headline("Stopping training early")
         pass
 
 
@@ -241,56 +253,43 @@ def train_epoch(model, vocabulary, data_loader, bptt_limit, clip, optimizer):
 
     # Set model to training mode (activates dropout and other things).
     model.train()
-    for i, batch in enumerate(data_loader):
-        sequence_tensors = batch["sequence_tensors"]
-        term_frequencies = None
-        for k in tqdm(range(sequence_tensors.size(1) - bptt_limit - 1)):
-            feed = sequence_tensors[:, k:k+bptt_limit].contiguous()
-            target = sequence_tensors[:, k + 1:k+bptt_limit + 1].contiguous()
+    for i, batch in tqdm(enumerate(data_loader)):
+        feed = torch.stack([example["input"] for example in batch])
+        target = torch.stack([example["target"] for example in batch])
+        term_frequencies = torch.stack([example["term_frequency"] for example in batch])
 
-            # Optimize on negative log likelihood.
-            feed = feed.to(device)
-            target = target.to(device)
-            loss, hidden = model.likelihood(feed, None, term_frequencies, target)
+        # Optimize on negative log likelihood.
+        feed = feed.to(device)
+        target = target.to(device)
+        term_frequencies = term_frequencies.to(device)
+        loss, hidden = model.likelihood(feed, None, term_frequencies, target)
 
-            # Perform backpropagation and update parameters.
-            optimizer.zero_grad()
-            loss.backward()
+        # Perform backpropagation and update parameters.
+        optimizer.zero_grad()
+        loss.backward()
 
-            # Helps with exploding/vanishing gradient
-            torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+        # Helps with exploding/vanishing gradient
+        torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+        optimizer.step()
 
-            optimizer.step()
+        """ Progress checking """
+        if (i + 1) % 5 == 0:
+            sanity_inference = feed[0, :-1]
+            sanity_term_frequency = batch[0]["term_frequency"]
+            print()
+            print_headline("Progress: Batch {}".format(i))
+            print("Loss:", loss.data.item())
+            print("Prediction:", ' '.join(predict(model, vocabulary, sanity_inference,
+                                                  sanity_term_frequency)))
+            print("From:      ", ' '.join(vocabulary.text_from_encoding(sanity_inference)))
+            new_topics, new_beta = extract_topics(model, vocabulary, k=20)
+            if original_topics is None:
+                original_topics = new_topics
 
-            # Compute term frequencies (one set delay to prevent cheating)
-            term_frequencies = torch.Tensor(feed.size(0), vocabulary.stopless_vocab_size)
-            for r in range(term_frequencies.size(0)):
-                term_frequencies[i] = vocabulary.compute_term_frequencies(feed[i])
-            term_frequencies = term_frequencies.to(device)
-
-            """ Progress checking """
-            if (k + 1) % 50 == 0:
-                sanity_term_frequency = vocabulary.compute_term_frequencies(sequence_tensors[0, k - bptt_limit:k])
-                sanity_inference = sequence_tensors[0, k:k + bptt_limit]
-                print("LOSS:", (loss.data.item()))
-                print("Prediction:", ' '.join(predict(model, vocabulary,
-                                                  sanity_inference, sanity_term_frequency)))            
-                print("From:      ", ' '.join(vocabulary.text_from_encoding(sanity_inference)))
-                print("Hidden state sum:", hidden.sum())
-
-                new_topics, new_beta = extract_topics(model, vocabulary, k=20)
-                if original_topics is None:
-                    original_topics = new_topics
-
-                if last_topics != new_topics and last_topics is not None:
-                    print("CHANGE FROM LAST TIME!")
-                    print("O.G TOPICS ---------------------")
-                    print(tabulate(original_topics, headers=["Topic #", "Words"]))
-                    print('NEW ---------------------')
-                    print(tabulate(new_topics, headers=["Topic #", "Words"]))
-                last_topics = new_topics
-
-                print("+--------------------------------------+")
+            if last_topics != new_topics and last_topics is not None:
+                print('NEW TOPICS')
+                print(tabulate(new_topics, headers=["Topic #", "Words"]))
+            last_topics = new_topics
 
 
 def predict(model, vocab, sentence, term_frequency):
@@ -303,7 +302,7 @@ def predict(model, vocab, sentence, term_frequency):
     term_frequency = term_frequency.float().to(device)
     output, hidden = model.likelihood(sentence.unsqueeze(0), hidden,
                                       term_frequency, None, is_single_example=True)
-    values, indices = torch.max(hidden, 2)
+    values, indices = hidden.max(dim=2)
     return vocab.text_from_encoding(indices.data.squeeze())
 
 
