@@ -1,11 +1,9 @@
 import argparse
 import logging
 import os
-import dill
 from tabulate import tabulate
 from tqdm import tqdm
 import sys
-
 
 import torch
 
@@ -13,7 +11,8 @@ from dataset_reader import ConflictDatasetReader, Vocabulary
 from topic_rnn_rc.models.topic_rnn import TopicRNN
 from topic_rnn_rc.models.rnn import RNN
 from topic_rnn_rc.models.lstm import LSTM
-from utils import *
+from utils import create_embeddings_from_vocab, sieve_vocabulary, \
+    collect_pickle, preserve_pickle, print_headline
 
 sys.path.append(os.path.join(os.path.dirname(__file__)))
 

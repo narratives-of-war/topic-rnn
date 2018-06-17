@@ -23,6 +23,7 @@ class ConflictDatasetReader(object):
 
         # It's too expensive for each example to have it's own copy of the term
         # frequency for the document they belong to.
+        self.id_to_encoding = {}
         self.id_to_term_frequency = {}
         self.id_to_title = {}
 
@@ -37,13 +38,14 @@ class ConflictDatasetReader(object):
             Updates the vocabulary count vector.
         """
         parsed_document = ujson.load(open(file_path, 'r'))
-        title = parsed_document["title"]
         text = parsed_document["text"]
+        title = parsed_document["title"]
         encoding = self.vocabulary.encode_from_text(text)
-
         if title is None or encoding is None:
             return []
+
         self.id_to_title[id] = title
+        self.id_to_encoding[id] = encoding
 
         term_frequency = self.vocabulary.compute_term_frequencies(encoding)
         self.id_to_term_frequency[id] = term_frequency
@@ -52,9 +54,9 @@ class ConflictDatasetReader(object):
         for i in range(len(encoding) - self.bptt_limit - 1):
             examples.append({
                 "id": id,
-                "input": encoding[i: i + self.bptt_limit],
-                "target": encoding[i + 1: i + 1 + self.bptt_limit],
-                "index": i
+                "index": i,
+                "target": i + 1,
+                "length": self.bptt_limit
             })
         return examples
 
@@ -76,7 +78,7 @@ class ConflictDatasetReader(object):
         absolute_paths = [os.path.join(data_path, document)
                           for document in file_paths]
 
-        for i, document in tqdm(enumerate(absolute_paths)):
+        for i, document in tqdm(enumerate(absolute_paths[0:10])):
             self.examples += self._read(document, i)
 
     def data_loader(self, shuffle=True):
@@ -101,11 +103,24 @@ class ConflictDatasetReader(object):
 
         rounded_by_batch = (len(examples) // self.batch_size) * self.batch_size
         for i in range(0, rounded_by_batch - self.batch_size, self.batch_size):
-            batch = examples[i:i + self.batch_size]
+            sample = examples[i:i + self.batch_size]
 
             # Perform mappings to term frequency and titles to complete the batch.
-            for ex in batch:
+            batch = []
+            start = time.clock()
+            for ex in sample:
                 example_id = ex["id"]
-                ex["title"] = self.id_to_title[example_id]
-                ex["term_frequency"] = self.id_to_term_frequency[example_id]
+                input_index = ex["index"]
+                target_index = ex["target"]
+                title = self.id_to_title[example_id]
+                input = self.id_to_encoding[example_id][input_index: input_index + self.bptt_limit]
+                target = self.id_to_encoding[example_id][target_index: target_index+ self.bptt_limit]
+                term_frequency = self.id_to_term_frequency[example_id]
+                batch.append({
+                    "title": title,
+                    "input": input,
+                    "target": target,
+                    "term_frequency": term_frequency
+                })
+            print("\nTime yielding batch:", time.clock() - start, "\n")
             yield batch
