@@ -4,6 +4,7 @@ import os
 import re
 import sys
 
+import ujson
 import torch
 from torch.nn.functional import normalize
 from nltk.tokenize import word_tokenize
@@ -55,15 +56,17 @@ def sieve_vocabulary(training_path, belligerents_path, min_token_count,
     for file in tqdm(training_files):
         file_path = os.path.join(training_path, file)
         with open(file_path, 'r') as f:
-            tokens += f.read().split()
+            file_json = ujson.load(f)
+            tokens += file_json["text"].split()
 
     # Map words to the number of times they occur in the corpus.
     word_frequencies = dict(Counter(tokens))
 
-    # Sieve the dictionary by excluding all words that appear fewer
-    # than min_token_count times.
-    vocab = set([w for w, f in word_frequencies.items()
-                if f >= min_token_count])
+    # Sieve the initial vocabulary by excluding all words that appear
+    # fewer than min_token_count times.
+    vocab = set([w.lower() if normalize_vocabulary else w
+                 for w, f in word_frequencies.items()
+                 if f >= min_token_count])
 
     if belligerents_path:
         print("Loading belligerents...")
@@ -74,14 +77,18 @@ def sieve_vocabulary(training_path, belligerents_path, min_token_count,
                 belligerents_tokens = word_tokenize(f.read())
 
             # Keep only words that are alphabetical.
-            belligerents_tokens = [token for token in belligerents_tokens
+            belligerents_tokens = [token.lower() if normalize_vocabulary else token
+                                   for token in belligerents_tokens
                                    if re.match(r'^[a-zA-Z]+$', token)]
+
+            tokens += belligerents_tokens
             vocab.update(belligerents_tokens)
 
-    if normalize_vocabulary:
-        vocab = set([word.lower() for word in vocab])
+    # Return the final counts of all tokens kept.
+    tokens = [token for token in tokens if token in vocab]
+    final_frequencies = dict(Counter(tokens))
 
-    return vocab
+    return vocab, final_frequencies
 
 
 def preserve_pickle(obj, out):
@@ -92,6 +99,12 @@ def preserve_pickle(obj, out):
 def collect_pickle(out):
     with open(out, 'rb') as f:
         return dill.load(f)
+
+
+def print_headline(headline, length=80):
+    print("+" + "-" * (length - 2) + "+")
+    print(" ", headline)
+    print("+" + "-" * (length - 2) + "+")
 
 
 def print_progress_in_place(*args):
