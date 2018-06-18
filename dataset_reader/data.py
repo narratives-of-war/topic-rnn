@@ -59,10 +59,12 @@ class Vocabulary(object):
         self.stopless_vocab_size = len(self.vocabulary["stopless"])
 
         # Compute the global background frequency under this vocabulary.
-        self.background_frequency = torch.zeros(self.vocab_size)
+        self.background_frequency = torch.zeros(self.vocab_size).float()
         for term, frequency in frequencies.items():
             term_index = self.get_index(term)
             self.background_frequency[term_index] = frequency
+        self.background_frequency /= torch.sum(self.background_frequency)
+        self.background_frequency = torch.log(self.background_frequency)
 
     def compute_term_frequencies(self, seq_tensor):
         """

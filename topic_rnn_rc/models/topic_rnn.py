@@ -101,7 +101,7 @@ class TopicRNN(nn.Module):
             return weight.new(self.layers, self.batch_size,
                               self.hidden_size).zero_()
 
-    def forward(self, input, hidden):
+    def forward(self, input, hidden, background_frequency):
         # Embed the passage.
         # Shape: (batch, length (single word), embedding_size)
         embedded_passage = self.embedding(input)
@@ -113,6 +113,10 @@ class TopicRNN(nn.Module):
 
         # Decode all intermediary hidden states.
         decoded = self.decoder(output)
+
+        # Background frequency will nudge the RNN/Topic Model to
+        # focus on uncommon words.
+        decoded += background_frequency
 
         # Extract topics for each word
         # Shape: (batch, sequence, vocabulary)
@@ -128,8 +132,8 @@ class TopicRNN(nn.Module):
 
         return decoded, hidden
 
-    def likelihood(self, input, hidden, term_frequencies, target,
-                   is_single_example=False):
+    def likelihood(self, input, hidden, term_frequencies, background_frequency,
+                   target, is_single_example=False):
         # 1. Compute Kullback-Leibler Divergence
         if hidden is None:
             hidden = self.init_hidden(single_example=is_single_example)
@@ -155,7 +159,7 @@ class TopicRNN(nn.Module):
             epsilon = self.noise.rsample().to(self.device)
             self.theta = softmax(mu + torch.exp(log_sigma) * epsilon, dim=-1).to(self.device)
 
-        output, hidden = self.forward(input, hidden)
+        output, hidden = self.forward(input, hidden, background_frequency)
         
         if target is not None:
             log_probabilities = cross_entropy(output.view(output.size(0) * output.size(1), -1),

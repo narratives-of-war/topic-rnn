@@ -119,7 +119,7 @@ def main():
                         help="Flag as to whether embeddings should be learned.")
 
     """Logistical"""
-    parser.add_argument("--log-period", type=int, default=50,
+    parser.add_argument("--log-period", type=int, default=20,
                         help=("Update training metrics every "
                               "log-period weight updates."))
     parser.add_argument("--validation-period", type=int, default=500,
@@ -228,40 +228,41 @@ def main():
         print_headline("Training in progress")
         for _ in range(args.num_epochs):
             data_loader = conflict_reader.data_loader()
-            train_epoch(model, vocabulary, data_loader, args.bptt_limit,
-                        args.clip, optimizer)
+            train_epoch(model, vocabulary, data_loader, optimizer,
+                        clip=args.clip, log_period=args.log_period)
     except KeyboardInterrupt:
         print()
         print_headline("Stopping training early")
         pass
 
 
-def train_epoch(model, vocabulary, data_loader, bptt_limit, clip, optimizer):
+def train_epoch(model, vocabulary, data_loader, optimizer,
+                clip=0.5, log_period=10):
     """
-    This model trains differently than baselines; it computes the likelihood
-    of a portion of text under the model instead of doing cross entropy against
-    the next word.
+    Trains the TopicRNN Model. The model isn't trained as a legitimate
+    language model due to term-frequencies being calculated with the
+    view of entire documents at once.
 
-    We maintain processing one word at a time to allow previous sections to
-    have direct influence on later ones (i.e. indifferent batching will
-    cause issues).
+    Aim is to train reasonable topics and for the RNNs to capture text
+    holistically rather that at the surface level.
     """
 
+    background_frequency = vocabulary.background_frequency.to(device)
     original_topics = None
     last_topics = None
-
-    # Set model to training mode (activates dropout and other things).
     model.train()
     for i, batch in tqdm(enumerate(data_loader)):
         feed = torch.stack([example["input"] for example in batch])
         target = torch.stack([example["target"] for example in batch])
-        term_frequencies = torch.stack([example["term_frequency"] for example in batch])
+        term_frequencies = torch.stack([example["term_frequency"]
+                                        for example in batch])
 
         # Optimize on negative log likelihood.
         feed = feed.to(device)
         target = target.to(device)
         term_frequencies = term_frequencies.to(device)
-        loss, hidden = model.likelihood(feed, None, term_frequencies, target)
+        loss, hidden = model.likelihood(feed, None, term_frequencies,
+                                        background_frequency, target)
 
         # Perform backpropagation and update parameters.
         optimizer.zero_grad()
@@ -272,7 +273,7 @@ def train_epoch(model, vocabulary, data_loader, bptt_limit, clip, optimizer):
         optimizer.step()
 
         """ Progress checking """
-        if (i + 1) % 5 == 0:
+        if (i + 1) % log_period == 0:
             sanity_inference = feed[0, :-1]
             sanity_term_frequency = batch[0]["term_frequency"]
             print()
@@ -298,9 +299,11 @@ def predict(model, vocab, sentence, term_frequency):
     # Move to GPU if using cuda.
     sentence = sentence.to(device)
     hidden = hidden.to(device)
+    background_frequency = vocab.background_frequency.to(device)
     term_frequency = term_frequency.float().to(device)
     output, hidden = model.likelihood(sentence.unsqueeze(0), hidden,
-                                      term_frequency, None, is_single_example=True)
+                                      term_frequency, background_frequency,
+                                      None, is_single_example=True)
     values, indices = hidden.max(dim=2)
     return vocab.text_from_encoding(indices.data.squeeze())
 
