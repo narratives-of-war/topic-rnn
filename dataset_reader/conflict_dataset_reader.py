@@ -1,6 +1,5 @@
 import os
 import random
-import time
 
 import ujson
 from tqdm import tqdm
@@ -27,7 +26,6 @@ class ConflictDatasetReader(object):
         self.id_to_term_frequency = {}
         self.id_to_title = {}
 
-    # TODO: Map examples to titles, and titles to term-frequency vectors.
     def _read(self, file_path, id):
         """
         Given a Conflict Wikipedia JSON, produces a training example.
@@ -107,7 +105,6 @@ class ConflictDatasetReader(object):
 
             # Perform mappings to term frequency and titles to complete the batch.
             batch = []
-            start = time.clock()
             for ex in sample:
                 example_id = ex["id"]
                 input_index = ex["index"]
@@ -122,5 +119,4 @@ class ConflictDatasetReader(object):
                     "target": target,
                     "term_frequency": term_frequency
                 })
-            print("\nTime yielding batch:", time.clock() - start, "\n")
             yield batch
