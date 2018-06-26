@@ -76,7 +76,7 @@ class ConflictDatasetReader(object):
         absolute_paths = [os.path.join(data_path, document)
                           for document in file_paths]
 
-        for i, document in tqdm(enumerate(absolute_paths[0:10])):
+        for i, document in tqdm(enumerate(absolute_paths)):
             self.examples += self._read(document, i)
 
     def data_loader(self, shuffle=True):
@@ -111,7 +111,7 @@ class ConflictDatasetReader(object):
                 target_index = ex["target"]
                 title = self.id_to_title[example_id]
                 input = self.id_to_encoding[example_id][input_index: input_index + self.bptt_limit]
-                target = self.id_to_encoding[example_id][target_index: target_index+ self.bptt_limit]
+                target = self.id_to_encoding[example_id][target_index: target_index + self.bptt_limit]
                 term_frequency = self.id_to_term_frequency[example_id]
                 batch.append({
                     "title": title,

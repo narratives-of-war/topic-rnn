@@ -261,8 +261,8 @@ def train_epoch(model, vocabulary, data_loader, optimizer,
         feed = feed.to(device)
         target = target.to(device)
         term_frequencies = term_frequencies.to(device)
-        loss, hidden = model.likelihood(feed, None, term_frequencies,
-                                        background_frequency, target)
+        loss, _ = model.likelihood(feed, None, term_frequencies,
+                                   background_frequency, target)
 
         # Perform backpropagation and update parameters.
         optimizer.zero_grad()
@@ -282,7 +282,7 @@ def train_epoch(model, vocabulary, data_loader, optimizer,
             print("Prediction:", ' '.join(predict(model, vocabulary, sanity_inference,
                                                   sanity_term_frequency)))
             print("From:      ", ' '.join(vocabulary.text_from_encoding(sanity_inference)))
-            new_topics, new_beta = extract_topics(model, vocabulary, k=20)
+            new_topics, _ = extract_topics(model, vocabulary, k=20)
             if original_topics is None:
                 original_topics = new_topics
 
@@ -301,10 +301,10 @@ def predict(model, vocab, sentence, term_frequency):
     hidden = hidden.to(device)
     background_frequency = vocab.background_frequency.to(device)
     term_frequency = term_frequency.float().to(device)
-    output, hidden = model.likelihood(sentence.unsqueeze(0), hidden,
-                                      term_frequency, background_frequency,
-                                      None, is_single_example=True)
-    values, indices = hidden.max(dim=2)
+    _, hidden = model.likelihood(sentence.unsqueeze(0), hidden,
+                                 term_frequency, background_frequency,
+                                 None, is_single_example=True)
+    _, indices = hidden.max(dim=2)
     return vocab.text_from_encoding(indices.data.squeeze())
 
 
